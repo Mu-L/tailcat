@@ -76,16 +76,16 @@ type DERPRegion struct {
 	//
 	// RegionIDs in range 900-999 are reserved for end users to run their
 	// own DERP nodes.
-	RegionID int
+	RegionID int `cbor:"id"`
 
 	// RegionCode is a short name for the region. It's usually a popular
 	// city or airport code in the region: "nyc", "sf", "sin",
 	// "fra", etc.
-	RegionCode string
+	RegionCode string `cbor:",omitempty"`
 
 	// RegionName is a long English name for the region: "New York City",
 	// "San Francisco", "Singapore", "Frankfurt", etc.
-	RegionName string
+	RegionName string `cbor:",omitempty"`
 
 	// Avoid is whether the client should avoid picking this as its home
 	// region. The region should only be used if a peer is there.
@@ -105,7 +105,7 @@ type DERPRegion struct {
 	// for a user/network pick the first one (as they should, when
 	// things are healthy), the inter-cluster routing is minimal
 	// to zero.
-	Nodes []*DERPNode
+	Nodes []*DERPNode `cbor:"n"`
 }
 
 // DERPNode describes a DERP packet relay node running within a DERPRegion.
@@ -114,17 +114,17 @@ type DERPNode struct {
 	// It is not a host name.
 	// It's typically of the form "1b", "2a", "3b", etc. (region
 	// ID + suffix within that region)
-	Name string
+	Name string `json:",omitempty"`
 
 	// RegionID is the RegionID of the DERPRegion that this node
 	// is running in.
-	RegionID int
+	RegionID int `json:",omitempty"`
 
 	// HostName is the DERP node's hostname.
 	//
 	// It is required but need not be unique; multiple nodes may
 	// have the same HostName but vary in configuration otherwise.
-	HostName string
+	HostName string `cbor:"hn,omitempty"`
 
 	// CertName optionally specifies the expected TLS cert common
 	// name. If empty, HostName is used. If CertName is non-empty,
@@ -137,14 +137,14 @@ type DERPNode struct {
 	// If the string is not an IPv4 address, IPv4 is not used; the
 	// conventional string to disable IPv4 (and not use DNS) is
 	// "none".
-	IPv4 string `json:",omitempty"`
+	IPv4 string `json:",omitempty" cbor:"4,omitempty"`
 
 	// IPv6 optionally forces an IPv6 address to use, instead of using DNS.
 	// If empty, AAAA record(s) from DNS lookups of HostName are used.
 	// If the string is not an IPv6 address, IPv6 is not used; the
 	// conventional string to disable IPv6 (and not use DNS) is
 	// "none".
-	IPv6 string `json:",omitempty"`
+	IPv6 string `json:",omitempty" cbor:"6,omitempty"`
 
 	// Port optionally specifies a STUN port to use.
 	// Zero means 3478.

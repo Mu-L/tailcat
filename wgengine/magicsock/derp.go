@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"math/rand"
 	"net"
 	"net/netip"
@@ -154,6 +155,8 @@ func (c *Conn) setNearestDERP(derpNum int) (wantDERP bool) {
 	}
 	c.myDerp = derpNum
 	health.SetMagicSockDERPHome(derpNum)
+
+	log.Printf("XXX derp: setNearestDERP: derpNum=%v, key=%v", derpNum, !c.privateKey.IsZero())
 
 	if c.privateKey.IsZero() {
 		// No private key yet, so DERP connections won't come up anyway.

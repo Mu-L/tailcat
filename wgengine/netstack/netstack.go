@@ -249,9 +249,6 @@ func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, stack.PacketB
 // Start sets up all the handlers so netstack can start working. Implements
 // wgengine.FakeImpl.
 func (ns *Impl) Start(lb *ipnlocal.LocalBackend) error {
-	if lb == nil {
-		panic("nil LocalBackend")
-	}
 	ns.lb = lb
 	ns.e.AddNetworkMapCallback(ns.updateIPs)
 	// size = 0 means use default buffer size

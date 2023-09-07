@@ -101,7 +101,10 @@ require (
 	software.sslmate.com/src/go-pkcs12 v0.2.0
 )
 
-require github.com/gorilla/securecookie v1.1.1 // indirect
+require (
+	github.com/fxamacker/cbor v1.5.1 // indirect
+	github.com/gorilla/securecookie v1.1.1 // indirect
+)
 
 require (
 	4d63.com/gocheckcompilerdirectives v1.2.1 // indirect
