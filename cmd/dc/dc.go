@@ -15,6 +15,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/ipn/store"
+	"tailscale.com/net/dns"
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/tsdial"
@@ -22,8 +23,11 @@ import (
 	"tailscale.com/tsd"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/types/netmap"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
+	"tailscale.com/wgengine/router"
+	"tailscale.com/wgengine/wgcfg"
 )
 
 var (
@@ -45,11 +49,13 @@ func main() {
 		log.Printf(">>> Listening on: %v", cb)
 
 		mc := sys.MagicSock.Get()
+		eng := sys.Engine.Get()
 		for {
-			time.Sleep(5 * time.Second)
 			var sb ipnstate.StatusBuilder
 			mc.UpdateStatus(&sb)
+			eng.UpdateStatus(&sb)
 			log.Printf("status = %v", logger.AsJSON(sb.Status()))
+			time.Sleep(5 * time.Second)
 		}
 	}
 	log.Fatalf("usage: ...")
@@ -76,7 +82,10 @@ type ConnInfo struct {
 func beServer() (ConnBlob, *tsd.System, error) {
 	var ci ConnInfo
 	priv := key.NewNode()
-	ci.ServerPub = priv.Public()
+	pub := priv.Public()
+	addr := dcAddrForKey(pub)
+	addrPrefix := netip.PrefixFrom(addr, addr.BitLen())
+	ci.ServerPub = pub
 
 	ci.Region = &tailcfg.DERPRegion{
 		RegionID:   10,
@@ -99,6 +108,7 @@ func beServer() (ConnBlob, *tsd.System, error) {
 	}
 	connBlob := ConnBlob(base64.StdEncoding.EncodeToString(x))
 	log.Printf(">>> Starting to listen on: %v", connBlob)
+	log.Printf("Internal IP is %v", addr)
 
 	var logf logger.Logf = log.Printf
 	sys := new(tsd.System)
@@ -151,9 +161,46 @@ func beServer() (ConnBlob, *tsd.System, error) {
 			ci.Region.RegionID: ci.Region,
 		},
 	})
+
+	nm := &netmap.NetworkMap{
+		PrivateKey: priv,
+		SelfNode: (&tailcfg.Node{
+			ID:        1,
+			StableID:  "1",
+			Name:      "server.derpcat.",
+			User:      100,
+			Key:       pub,
+			DiscoKey:  mc.DiscoPublicKey(), // TODO: change how disco works
+			Addresses: []netip.Prefix{addrPrefix},
+		}).View(),
+	}
+	e.SetNetworkMap(nm)
 	mc.SetNetworkUp(true)
 
+	wgConf := &wgcfg.Config{
+		Name:       "server",
+		PrivateKey: priv,
+		Addresses:  []netip.Prefix{addrPrefix},
+		MTU:        1280,
+		Peers:      []wgcfg.Peer{}, // TODO: add peers dynamically as they disco to us
+	}
+	routerConf := &router.Config{
+		LocalAddrs: []netip.Prefix{addrPrefix},
+	}
+	dnsConf := &dns.Config{}
+	if err := e.Reconfig(wgConf, routerConf, dnsConf); err != nil {
+		return "", nil, fmt.Errorf("e.Reconfig: %w", err)
+	}
+
 	return connBlob, sys, nil
+}
+
+func dcAddrForKey(k key.NodePublic) netip.Addr {
+	var a [16]byte
+	r := k.Raw32()
+	copy(a[:], r[:])
+	a[0] = 0xfc // ULA prefix. close enough. forcing final bit to 0.
+	return netip.AddrFrom16(a)
 }
 
 func newNetstack(logf logger.Logf, sys *tsd.System) (*netstack.Impl, error) {
