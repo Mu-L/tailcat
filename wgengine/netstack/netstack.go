@@ -559,9 +559,6 @@ func (ns *Impl) decrementInFlightTCPForward(tei stack.TransportEndpointID, remot
 // Start sets up all the handlers so netstack can start working. Implements
 // wgengine.FakeImpl.
 func (ns *Impl) Start(lb *ipnlocal.LocalBackend) error {
-	if lb == nil {
-		panic("nil LocalBackend")
-	}
 	ns.lb = lb
 	tcpFwd := tcp.NewForwarder(ns.ipstack, tcpRXBufDefSize, maxInFlightConnectionAttempts(), ns.acceptTCP)
 	udpFwd := udp.NewForwarder(ns.ipstack, ns.acceptUDP)
