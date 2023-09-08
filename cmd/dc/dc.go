@@ -8,13 +8,12 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
-	"tailscale.com/ipn/store"
+	"tailscale.com/ipn/store/mem"
 	"tailscale.com/net/dns"
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
@@ -42,14 +41,17 @@ func main() {
 		return
 	}
 	if *flagServer {
-		cb, sys, err := beServer()
+		lb, err := beServer()
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf(">>> Listening on: %v", cb)
+		if err := lb.Start(); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf(">>> Listening on: %v", lb.ConnBlob())
 
-		mc := sys.MagicSock.Get()
-		eng := sys.Engine.Get()
+		mc := lb.sys.MagicSock.Get()
+		eng := lb.sys.Engine.Get()
 		for {
 			var sb ipnstate.StatusBuilder
 			mc.UpdateStatus(&sb)
@@ -62,13 +64,12 @@ func main() {
 }
 
 func doTest() {
-	cb, sys, err := beServer()
+	lb, err := beServer()
 	if err != nil {
 		log.Fatal(err)
 	}
+	cb := lb.ConnBlob()
 	log.Printf(">>> Listening on: %v", cb)
-	_ = sys
-
 }
 
 // ConnBlob is the base64 encoded cbor of ConnInfo.
@@ -79,15 +80,39 @@ type ConnInfo struct {
 	Region    *tailcfg.DERPRegion `cbor:"r"`
 }
 
-func beServer() (ConnBlob, *tsd.System, error) {
-	var ci ConnInfo
-	priv := key.NewNode()
+// LocoBackend is like tailscaled's LocalBackend, but crazier.
+// It serves a similar purpose (to be the hub of the world)
+// but there's no controlclient involved, because there's
+// no control plane.
+type LocoBackend struct {
+	sys        tsd.System
+	priv       key.NodePrivate
+	pub        key.NodePublic
+	addr       netip.Addr
+	addrPrefix netip.Prefix
+	ns         *netstack.Impl
+	dm         *tailcfg.DERPMap
+}
+
+func NewLocoBackend(priv key.NodePrivate) (*LocoBackend, error) {
 	pub := priv.Public()
 	addr := dcAddrForKey(pub)
 	addrPrefix := netip.PrefixFrom(addr, addr.BitLen())
-	ci.ServerPub = pub
+	lb := &LocoBackend{
+		priv:       priv,
+		pub:        pub,
+		addr:       addr,
+		addrPrefix: addrPrefix,
+	}
 
-	ci.Region = &tailcfg.DERPRegion{
+	return lb, nil
+}
+
+// must be called before (not concurrently with) Start.
+func (lb *LocoBackend) DiscoverDERPMap() error {
+	// TODO: fetch/cache+test derpmap
+
+	sea := &tailcfg.DERPRegion{
 		RegionID:   10,
 		RegionCode: "sea",
 		Nodes: []*tailcfg.DERPNode{
@@ -101,43 +126,68 @@ func beServer() (ConnBlob, *tsd.System, error) {
 			},
 		},
 	}
+	lb.dm = &tailcfg.DERPMap{
+		Regions: map[int]*tailcfg.DERPRegion{
+			sea.RegionID: sea,
+		},
+	}
+	return nil
+}
+
+func (lb *LocoBackend) ConnBlob() ConnBlob {
+	if lb.dm == nil {
+		panic("no DERPMap set")
+	}
+	var ci ConnInfo
+	ci.ServerPub = lb.pub
+	for _, r := range lb.dm.Regions {
+		ci.Region = r
+	}
+	if ci.Region == nil {
+		panic("no regions in derpmap")
+	}
 
 	x, err := cbor.Marshal(&ci)
 	if err != nil {
-		return "", nil, fmt.Errorf("cbor.Marshal: %w", err)
+		panic(err)
 	}
-	connBlob := ConnBlob(base64.StdEncoding.EncodeToString(x))
-	log.Printf(">>> Starting to listen on: %v", connBlob)
-	log.Printf("Internal IP is %v", addr)
+	return ConnBlob(base64.StdEncoding.EncodeToString(x))
+}
 
+func beServer() (*LocoBackend, error) {
+	lb, err := NewLocoBackend(key.NewNode())
+	if err != nil {
+		return nil, fmt.Errorf("NewLocoBackend: %w", err)
+	}
+	if err := lb.DiscoverDERPMap(); err != nil {
+		return nil, fmt.Errorf("DiscoverDERPMap: %w", err)
+	}
+	sys := &lb.sys
 	var logf logger.Logf = log.Printf
-	sys := new(tsd.System)
 	netMon, err := netmon.New(func(format string, args ...any) {
 		logf(format, args...)
 	})
 	if err != nil {
-		return "", nil, fmt.Errorf("netmon.New: %w", err)
+		return nil, fmt.Errorf("netmon.New: %w", err)
 	}
 	sys.Set(netMon)
 
 	dialer := &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	sys.Set(dialer)
 
-	store, err := store.New(logf, filepath.Join(os.Getenv("HOME"), ".config", "tsdc.state"))
-	if err != nil {
-		return "", nil, fmt.Errorf("store.New: %w", err)
-	}
+	var store ipn.StateStore = new(mem.Store)
 	sys.Set(store)
 
 	if err := createEngine(logf, sys); err != nil {
-		return "", nil, fmt.Errorf("createEngine: %w", err)
+		return nil, fmt.Errorf("createEngine: %w", err)
 	}
 	ns, err := newNetstack(logf, sys)
 	if err != nil {
-		return "", nil, fmt.Errorf("newNetstack: %w", err)
+		return nil, fmt.Errorf("newNetstack: %w", err)
 	}
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
+	lb.ns = ns
 
 	e := sys.Engine.Get()
 	dialer.UseNetstackForIP = func(ip netip.Addr) bool {
@@ -148,30 +198,32 @@ func beServer() (ConnBlob, *tsd.System, error) {
 		return ns.DialContextTCP(ctx, dst)
 	}
 
-	if err := ns.Start(nil /* no LocalBackend */); err != nil {
-		return "", nil, fmt.Errorf("failed to start netstack: %w", err)
+	return lb, nil
+}
+
+func (lb *LocoBackend) Start() error {
+
+	if err := lb.ns.Start(nil /* no LocalBackend */); err != nil {
+		return fmt.Errorf("failed to start netstack: %w", err)
 	}
 
-	mc := sys.MagicSock.Get()
+	e := lb.sys.Engine.Get()
+	mc := lb.sys.MagicSock.Get()
 	log.Printf("disco pub key: %v", mc.DiscoPublicKey())
 
-	mc.SetPrivateKey(priv)
-	e.SetDERPMap(&tailcfg.DERPMap{
-		Regions: map[int]*tailcfg.DERPRegion{
-			ci.Region.RegionID: ci.Region,
-		},
-	})
+	mc.SetPrivateKey(lb.priv)
+	e.SetDERPMap(lb.dm)
 
 	nm := &netmap.NetworkMap{
-		PrivateKey: priv,
+		PrivateKey: lb.priv,
 		SelfNode: (&tailcfg.Node{
 			ID:        1,
 			StableID:  "1",
 			Name:      "server.derpcat.",
 			User:      100,
-			Key:       pub,
+			Key:       lb.pub,
 			DiscoKey:  mc.DiscoPublicKey(), // TODO: change how disco works
-			Addresses: []netip.Prefix{addrPrefix},
+			Addresses: []netip.Prefix{lb.addrPrefix},
 		}).View(),
 	}
 	e.SetNetworkMap(nm)
@@ -179,20 +231,21 @@ func beServer() (ConnBlob, *tsd.System, error) {
 
 	wgConf := &wgcfg.Config{
 		Name:       "server",
-		PrivateKey: priv,
-		Addresses:  []netip.Prefix{addrPrefix},
+		PrivateKey: lb.priv,
+		Addresses:  []netip.Prefix{lb.addrPrefix},
 		MTU:        1280,
 		Peers:      []wgcfg.Peer{}, // TODO: add peers dynamically as they disco to us
 	}
 	routerConf := &router.Config{
-		LocalAddrs: []netip.Prefix{addrPrefix},
+		LocalAddrs: []netip.Prefix{lb.addrPrefix},
 	}
 	dnsConf := &dns.Config{}
 	if err := e.Reconfig(wgConf, routerConf, dnsConf); err != nil {
-		return "", nil, fmt.Errorf("e.Reconfig: %w", err)
+		return fmt.Errorf("e.Reconfig: %w", err)
 	}
+	lb.sys.NetMon.Get().Start()
 
-	return connBlob, sys, nil
+	return nil
 }
 
 func dcAddrForKey(k key.NodePublic) netip.Addr {
