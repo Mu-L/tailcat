@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
 	"maps"
 	"net"
 	"net/netip"
@@ -223,8 +222,6 @@ func (c *Conn) setNearestDERP(derpNum int) (wantDERP bool) {
 	}
 	c.myDerp = derpNum
 	c.health.SetMagicSockDERPHome(derpNum, c.homeless)
-
-	log.Printf("XXX derp: setNearestDERP: derpNum=%v, key=%v", derpNum, !c.privateKey.IsZero())
 
 	if c.privateKey.IsZero() {
 		// No private key yet, so DERP connections won't come up anyway.
