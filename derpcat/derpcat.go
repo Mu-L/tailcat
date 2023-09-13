@@ -3,10 +3,12 @@ package derpcat
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/netip"
+	"strings"
 
 	"github.com/fxamacker/cbor/v2"
 	"tailscale.com/ipn"
@@ -133,7 +135,6 @@ func NewLocoBackend(priv key.NodePrivate) *LocoBackend {
 		addr:       addr,
 		addrPrefix: addrPrefix,
 	}
-
 	return lb
 }
 
@@ -181,6 +182,23 @@ func (lb *LocoBackend) ConnBlob() ConnBlob {
 		panic(err)
 	}
 	return "derpcat_" + ConnBlob(base64.URLEncoding.EncodeToString(x))
+}
+
+func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
+	var zero ConnInfo
+	rest, ok := strings.CutPrefix(string(cb), "derpcat_")
+	if !ok {
+		return zero, errors.New("server doesn't start with \"derpcat_\"")
+	}
+	x, err := base64.URLEncoding.DecodeString(rest)
+	if err != nil {
+		return zero, fmt.Errorf("base64 decode: %w", err)
+	}
+	var ci ConnInfo
+	if err := cbor.Unmarshal(x, &ci); err != nil {
+		return zero, fmt.Errorf("CBOR unmarshal: %v", err)
+	}
+	return ci, nil
 }
 
 func (lb *LocoBackend) Start() error {
@@ -274,3 +292,64 @@ func createEngine(logf logger.Logf, sys *tsd.System) (err error) {
 	sys.NetstackRouter.Set(true)
 	return nil
 }
+
+type Client struct {
+	lb *LocoBackend
+}
+
+func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
+	ci, err := ParseConnBlob(server)
+	if err != nil {
+		return nil, err
+	}
+
+	priv := key.NewNode()
+	lb := NewLocoBackend(priv)
+	lb.logf = logf
+	lb.dm = &tailcfg.DERPMap{}
+	for _, r := range ci.Region {
+		mak.Set(&lb.dm.Regions, r.RegionID, r)
+	}
+
+	sys := &lb.sys
+	netMon, err := netmon.New(func(format string, args ...any) {
+		logf(format, args...)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("netmon.New: %w", err)
+	}
+	sys.Set(netMon)
+
+	dialer := &tsdial.Dialer{Logf: logf} // mutated below (before used)
+	sys.Set(dialer)
+
+	var store ipn.StateStore = new(mem.Store)
+	sys.Set(store)
+
+	if err := createEngine(logf, sys); err != nil {
+		return nil, fmt.Errorf("createEngine: %w", err)
+	}
+	ns, err := newNetstack(logf, sys)
+	if err != nil {
+		return nil, fmt.Errorf("newNetstack: %w", err)
+	}
+	ns.ProcessLocalIPs = true
+	ns.ProcessSubnets = true
+	lb.ns = ns
+
+	e := sys.Engine.Get()
+	dialer.UseNetstackForIP = func(ip netip.Addr) bool {
+		_, ok := e.PeerForIP(ip)
+		return ok
+	}
+	dialer.NetstackDialTCP = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		return ns.DialContextTCP(ctx, dst)
+	}
+
+	return &Client{
+		lb: lb,
+	}, nil
+}
+
+func (c *Client) Start() error { return c.lb.Start() }
+func (c *Client) Close() error { return c.lb.Close() }
