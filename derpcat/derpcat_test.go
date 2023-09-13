@@ -19,7 +19,10 @@ func TestDERPCat(t *testing.T) {
 	}
 	priv := key.NewNode()
 
-	s, err := NewServer(priv, logf, reg)
+	s, err := NewServer(priv, func(format string, args ...any) {
+		t.Helper()
+		t.Logf("        [server] "+format, args...)
+	}, reg)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -29,4 +32,18 @@ func TestDERPCat(t *testing.T) {
 	if err := s.Start(); err != nil {
 		t.Fatalf("server Start: %v", err)
 	}
+
+	c, err := NewClient(func(format string, args ...any) {
+		t.Helper()
+		t.Logf("        [client] "+format, args...)
+	}, s.ConnBlob())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("client Start: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	t.Logf("done")
 }
