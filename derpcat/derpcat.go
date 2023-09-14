@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -79,10 +78,24 @@ type Server struct {
 	// AllowProxy, if non-nil, reports whether
 	// a TCP or UDP proxy is allowed for that target.
 	AllowProxy func(netip.AddrPort) bool
+
+	// OnTCP, if non-nil, specifies a func that returns a handler to handle
+	// incoming connections to the provided port. If nil or if it returns nil,
+	// then a RST is sent.
+	//
+	// This only applies to connections directly to the server node and not
+	// when being a subnet router.
+	//
+	// Must be set before calling Start.
+	OnTCP func(port uint16) (handler func(net.Conn))
 }
 
 func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegion) (*Server, error) {
 	lb := newLocoBackend(priv)
+	srv := &Server{
+		lb: lb,
+	}
+
 	lb.logf = logf
 	lb.dm = &tailcfg.DERPMap{}
 	for _, r := range regs {
@@ -114,14 +127,10 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
 	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
-		logf("XXX connection from %v to %v", src, dst)
-		if dst.Port() != 80 {
-			return nil, true // sends RST
+		if srv.OnTCP == nil {
+			return nil, true // send RST
 		}
-		return func(c net.Conn) {
-			io.WriteString(c, "Hello from port 80\n")
-			c.Close()
-		}, true
+		return srv.OnTCP(dst.Port()), true
 	}
 	lb.ns = ns
 
@@ -135,7 +144,7 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 		return ns.DialContextTCP(ctx, dst)
 	}
 
-	return &Server{lb: lb}, nil
+	return srv, nil
 }
 
 func (s *Server) Start() error { return s.lb.Start() }
