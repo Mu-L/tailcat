@@ -166,7 +166,7 @@ func exe() string {
 // RunDERPAndSTUN runs a local DERP and STUN server for tests, returning the derpMap
 // that clients should use. This creates resources that must be cleaned up with the
 // returned cleanup function.
-func RunDERPAndSTUN(t testing.TB, logf logger.Logf, ipAddress string) (derpMap *tailcfg.DERPMap) {
+func RunDERPAndSTUN(t testing.TB, logf logger.Logf, ipAddress string) (derpServer *derp.Server, derpMap *tailcfg.DERPMap) {
 	t.Helper()
 
 	d := derp.NewServer(key.NewNode(), logf)
@@ -216,7 +216,7 @@ func RunDERPAndSTUN(t testing.TB, logf logger.Logf, ipAddress string) (derpMap *
 		ln.Close()
 	})
 
-	return m
+	return d, m
 }
 
 // LogCatcher is a minimal logcatcher for the logtail upload client.

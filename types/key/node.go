@@ -370,3 +370,11 @@ func (k NodePublic) WireGuardGoString() string {
 	b[second+3] = b64((k.k[31] << 2) & 63)
 	return string(b)
 }
+
+func (k NodePrivate) AsDiscoPrivate() DiscoPrivate {
+	return DiscoPrivate(k)
+}
+
+func (k NodePublic) AsDiscoPublic() DiscoPublic {
+	return DiscoPublic(k)
+}
