@@ -124,6 +124,8 @@ type Ping struct {
 	// Padding is the number of 0 bytes at the end of the
 	// message. (It's used to probe path MTU.)
 	Padding int
+
+	Meow bool // derpcat (client) says hi
 }
 
 // PingLen is the length of a marshalled ping message, without the message
@@ -137,7 +139,11 @@ func (m *Ping) AppendMarshal(b []byte) []byte {
 		dataLen += key.NodePublicRawLen
 	}
 
-	ret, d := appendMsgHeader(b, TypePing, v0, dataLen+m.Padding)
+	ver := v0
+	if m.Meow {
+		ver = 1
+	}
+	ret, d := appendMsgHeader(b, TypePing, ver, dataLen+m.Padding)
 	n := copy(d, m.TxID[:])
 	if hasKey {
 		m.NodeKey.AppendTo(d[:n])
@@ -150,6 +156,7 @@ func parsePing(ver uint8, p []byte) (m *Ping, err error) {
 		return nil, errShort
 	}
 	m = new(Ping)
+	m.Meow = ver == 1
 	m.Padding = len(p)
 	p = p[copy(m.TxID[:], p):]
 	m.Padding -= 12
