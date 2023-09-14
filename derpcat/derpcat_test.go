@@ -1,6 +1,7 @@
 package derpcat
 
 import (
+	"context"
 	"testing"
 
 	"tailscale.com/tstest/integration"
@@ -8,9 +9,18 @@ import (
 	"tailscale.com/types/logger"
 )
 
+func mkLogger(t testing.TB, name string) logger.Logf {
+	return func(format string, args ...any) {
+		t.Helper()
+		if t.Failed() {
+			return
+		}
+		t.Logf("        ["+name+"] "+format, args...)
+	}
+}
+
 func TestDERPCat(t *testing.T) {
-	logf := logger.TestLogger(t)
-	dm := integration.RunDERPAndSTUN(t, logf, "127.0.0.1")
+	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
 	t.Logf("DERPMap: %v", logger.AsJSON(dm))
 
 	reg := dm.Regions[1]
@@ -19,10 +29,7 @@ func TestDERPCat(t *testing.T) {
 	}
 	priv := key.NewNode()
 
-	s, err := NewServer(priv, func(format string, args ...any) {
-		t.Helper()
-		t.Logf("        [server] "+format, args...)
-	}, reg)
+	s, err := NewServer(priv, mkLogger(t, "server"), reg)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -33,10 +40,7 @@ func TestDERPCat(t *testing.T) {
 		t.Fatalf("server Start: %v", err)
 	}
 
-	c, err := NewClient(func(format string, args ...any) {
-		t.Helper()
-		t.Logf("        [client] "+format, args...)
-	}, s.ConnBlob())
+	c, err := NewClient(mkLogger(t, "client"), s.ConnBlob())
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -45,5 +49,9 @@ func TestDERPCat(t *testing.T) {
 	}
 	t.Cleanup(func() { c.Close() })
 
-	t.Logf("done")
+	pi, err := c.Ping(context.Background())
+	if err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	t.Logf("got ping: %+v", pi)
 }
