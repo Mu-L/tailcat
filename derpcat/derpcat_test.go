@@ -41,6 +41,16 @@ func TestDERPCat(t *testing.T) {
 	t.Cleanup(func() { s.Close() })
 	t.Logf("server: %v", s.ConnBlob())
 
+	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
+		if port != 80 {
+			return nil
+		}
+		return func(c net.Conn) {
+			io.WriteString(c, "Hello from port 80\n")
+			c.Close()
+		}
+	}
+
 	if err := s.Start(); err != nil {
 		t.Fatalf("server Start: %v", err)
 	}
