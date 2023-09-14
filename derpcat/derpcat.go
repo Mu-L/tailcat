@@ -5,10 +5,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -24,8 +27,10 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
+	"tailscale.com/util/cmpx"
 	"tailscale.com/util/mak"
 	"tailscale.com/wgengine"
+	"tailscale.com/wgengine/filter"
 	"tailscale.com/wgengine/netstack"
 	"tailscale.com/wgengine/router"
 	"tailscale.com/wgengine/wgcfg"
@@ -53,6 +58,9 @@ type locoBackend struct {
 	dm         *tailcfg.DERPMap
 	logf       logger.Logf
 	serverPub  key.NodePublic // non-zero if we're a client (server's public key)
+
+	mu      sync.Mutex
+	clients map[key.NodePublic]*tailcfg.Node // for the server
 }
 
 func (b *locoBackend) Close() error {
@@ -105,9 +113,20 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 	}
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
+	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
+		logf("XXX connection from %v to %v", src, dst)
+		if dst.Port() != 80 {
+			return nil, true // sends RST
+		}
+		return func(c net.Conn) {
+			io.WriteString(c, "Hello from port 80\n")
+			c.Close()
+		}, true
+	}
 	lb.ns = ns
 
 	e := sys.Engine.Get()
+	e.SetFilter(filter.NewAllowAllForTest(logf)) // TODO: trashy
 	dialer.UseNetstackForIP = func(ip netip.Addr) bool {
 		_, ok := e.PeerForIP(ip)
 		return ok
@@ -220,15 +239,20 @@ func (lb *locoBackend) Start() error {
 	}
 	if lb.serverPub.IsZero() {
 		// We're the server. (hence the serverPub is zero)
+		discoPriv := lb.priv.AsDiscoPrivate()
+		mc.SetDisco(discoPriv)
+		mc.BeDerpCatServer(lb.onMeow)
+
 		nm.SelfNode = (&tailcfg.Node{
 			ID:         1,
 			StableID:   "1",
 			Name:       "server.derpcat.",
 			User:       100,
 			Key:        lb.pub,
-			DiscoKey:   mc.DiscoPublicKey(), // TODO: change how disco works
+			DiscoKey:   discoPriv.Public(),
 			Addresses:  []netip.Prefix{lb.addrPrefix},
 			AllowedIPs: []netip.Prefix{lb.addrPrefix},
+			DERP:       "127.3.3.40:1",
 		}).View()
 	} else {
 		// We're the client.
@@ -241,8 +265,9 @@ func (lb *locoBackend) Start() error {
 			Name:      "client.derpcat.",
 			User:      100,
 			Key:       lb.pub,
-			DiscoKey:  mc.DiscoPublicKey(), // TODO: change how disco works
+			DiscoKey:  mc.DiscoPublicKey(),
 			Addresses: []netip.Prefix{lb.addrPrefix},
+			DERP:      "127.3.3.40:1",
 		}).View()
 		nm.Peers = append(nm.Peers, (&tailcfg.Node{
 			ID:         1,
@@ -250,11 +275,13 @@ func (lb *locoBackend) Start() error {
 			Name:       "server.derpcat.",
 			User:       100,
 			Key:        lb.serverPub,
-			DiscoKey:   key.NewDisco().Public(), // TODO: change how disco works. This is dummy placeholder to placate magicsock for now
+			DiscoKey:   lb.serverPub.AsDiscoPublic(),
 			Addresses:  []netip.Prefix{serverAddrPrefix},
 			AllowedIPs: []netip.Prefix{serverAddrPrefix},
+			DERP:       "127.3.3.40:1",
 		}).View())
 	}
+	nm.Addresses = nm.SelfNode.Addresses().AsSlice() // dumb redundant field for now
 	e.SetNetworkMap(nm)
 	mc.SetNetworkUp(true)
 	lb.logf("NetworkMap: %v", logger.AsJSON(nm))
@@ -283,6 +310,71 @@ func (lb *locoBackend) Start() error {
 	lb.sys.NetMon.Get().Start()
 
 	return nil
+}
+
+func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.clients[src]; ok {
+		return
+	}
+	id := len(b.clients) + 2 // server id ID 1, clients are IDs 2, 3, ...
+	mak.Set(&b.clients, src, &tailcfg.Node{
+		ID:         tailcfg.NodeID(id),
+		StableID:   tailcfg.StableNodeID(fmt.Sprint(id)),
+		Name:       fmt.Sprintf("client%d.derpcat.", id),
+		User:       100,
+		Key:        src,
+		DiscoKey:   discoPub,
+		Addresses:  []netip.Prefix{pfxOf(dcAddrForKey(src))},
+		AllowedIPs: []netip.Prefix{pfxOf(dcAddrForKey(src))},
+		DERP:       "127.3.3.40:1",
+	})
+
+	nm := &netmap.NetworkMap{
+		PrivateKey: b.priv,
+		SelfNode: (&tailcfg.Node{
+			ID:         1,
+			StableID:   "1",
+			Name:       "server.derpcat.",
+			User:       100,
+			Key:        b.pub,
+			DiscoKey:   b.priv.AsDiscoPrivate().Public(), // TODO: cache
+			Addresses:  []netip.Prefix{b.addrPrefix},
+			AllowedIPs: []netip.Prefix{b.addrPrefix},
+			DERP:       "127.3.3.40:1",
+		}).View(),
+	}
+	nm.Addresses = nm.SelfNode.Addresses().AsSlice() // dumb redundant field for now
+	for _, n := range b.clients {
+		nm.Peers = append(nm.Peers, n.View())
+	}
+	slices.SortFunc(nm.Peers, func(a, b tailcfg.NodeView) int {
+		return cmpx.Compare(a.ID(), b.ID())
+	})
+	eng := b.sys.Engine.Get()
+	eng.SetNetworkMap(nm)
+
+	wgConf := &wgcfg.Config{
+		Name:       "self",
+		PrivateKey: b.priv,
+		Addresses:  []netip.Prefix{b.addrPrefix},
+		MTU:        1280,
+		Peers:      []wgcfg.Peer{}, // TODO: add peers dynamically as they disco to us
+	}
+	for _, p := range b.clients {
+		wgConf.Peers = append(wgConf.Peers, wgcfg.Peer{
+			PublicKey:  p.Key,
+			AllowedIPs: p.AllowedIPs,
+		})
+	}
+	routerConf := &router.Config{
+		LocalAddrs: []netip.Prefix{b.addrPrefix},
+	}
+	dnsConf := &dns.Config{}
+	if err := eng.Reconfig(wgConf, routerConf, dnsConf); err != nil {
+		panic(fmt.Sprintf("e.Reconfig: %v", err))
+	}
 }
 
 func (b *locoBackend) Status() *ipnstate.Status {
@@ -372,11 +464,14 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newNetstack: %w", err)
 	}
-	ns.ProcessLocalIPs = false
-	ns.ProcessSubnets = false
+	ns.ProcessLocalIPs = true // required to even reply to TCP SYNs client sends out
+	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
+		return nil, true // don't accept any incoming connections to client
+	}
 	lb.ns = ns
 
 	e := sys.Engine.Get()
+	e.SetFilter(filter.NewAllowAllForTest(logf)) // TODO: trashy
 	dialer.UseNetstackForIP = func(ip netip.Addr) bool {
 		_, ok := e.PeerForIP(ip)
 		return ok
@@ -391,8 +486,9 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) Start() error { return c.lb.Start() }
-func (c *Client) Close() error { return c.lb.Close() }
+func (c *Client) PublicKey() key.NodePublic { return c.lb.pub }
+func (c *Client) Start() error              { return c.lb.Start() }
+func (c *Client) Close() error              { return c.lb.Close() }
 
 type PingResult struct {
 	Latency time.Duration
@@ -421,4 +517,8 @@ func (c *Client) Ping(ctx context.Context) (PingResult, error) {
 	case <-ctx.Done():
 		return zero, ctx.Err()
 	}
+}
+
+func pfxOf(a netip.Addr) netip.Prefix {
+	return netip.PrefixFrom(a, a.BitLen())
 }
