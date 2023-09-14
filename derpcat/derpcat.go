@@ -159,11 +159,12 @@ func newLocoBackend(priv key.NodePrivate) *locoBackend {
 	return lb
 }
 
-// must be called before (not concurrently with) Start.
-func (lb *locoBackend) DiscoverDERPMap() error {
-	// TODO: fetch/cache+test derpmap
+func PickRegion() (*tailcfg.DERPRegion, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	sea := &tailcfg.DERPRegion{
+	_ = ctx // TODO: conditionally fetch/refresh derpmap?
+	return &tailcfg.DERPRegion{
 		RegionID:   10,
 		RegionCode: "sea",
 		Nodes: []*tailcfg.DERPNode{
@@ -176,13 +177,7 @@ func (lb *locoBackend) DiscoverDERPMap() error {
 				IPv4:     "192.73.240.121",
 			},
 		},
-	}
-	lb.dm = &tailcfg.DERPMap{
-		Regions: map[int]*tailcfg.DERPRegion{
-			sea.RegionID: sea,
-		},
-	}
-	return nil
+	}, nil
 }
 
 func (lb *locoBackend) ConnBlob() ConnBlob {
@@ -521,4 +516,8 @@ func (c *Client) Ping(ctx context.Context) (PingResult, error) {
 
 func pfxOf(a netip.Addr) netip.Prefix {
 	return netip.PrefixFrom(a, a.BitLen())
+}
+
+func (s *Server) Status() *ipnstate.Status {
+	return s.lb.Status()
 }
