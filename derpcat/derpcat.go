@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"tailscale.com/ipn"
@@ -38,11 +39,11 @@ type ConnInfo struct {
 	Region    []*tailcfg.DERPRegion `cbor:"r"`
 }
 
-// LocoBackend is like tailscaled's LocalBackend, but crazier.
+// locoBackend is like tailscaled's LocalBackend, but crazier.
 // It serves a similar purpose (to be the hub of the world)
 // but there's no controlclient involved, because there's
 // no control plane.
-type LocoBackend struct {
+type locoBackend struct {
 	sys        tsd.System
 	priv       key.NodePrivate
 	pub        key.NodePublic
@@ -51,9 +52,10 @@ type LocoBackend struct {
 	ns         *netstack.Impl
 	dm         *tailcfg.DERPMap
 	logf       logger.Logf
+	serverPub  key.NodePublic // non-zero if we're a client (server's public key)
 }
 
-func (b *LocoBackend) Close() error {
+func (b *locoBackend) Close() error {
 	if e, ok := b.sys.Engine.GetOK(); ok {
 		e.Close()
 	}
@@ -64,7 +66,7 @@ func (b *LocoBackend) Close() error {
 }
 
 type Server struct {
-	lb *LocoBackend
+	lb *locoBackend
 
 	// AllowProxy, if non-nil, reports whether
 	// a TCP or UDP proxy is allowed for that target.
@@ -72,7 +74,7 @@ type Server struct {
 }
 
 func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegion) (*Server, error) {
-	lb := NewLocoBackend(priv)
+	lb := newLocoBackend(priv)
 	lb.logf = logf
 	lb.dm = &tailcfg.DERPMap{}
 	for _, r := range regs {
@@ -124,11 +126,11 @@ func (s *Server) ConnBlob() ConnBlob {
 	return s.lb.ConnBlob()
 }
 
-func NewLocoBackend(priv key.NodePrivate) *LocoBackend {
+func newLocoBackend(priv key.NodePrivate) *locoBackend {
 	pub := priv.Public()
 	addr := dcAddrForKey(pub)
 	addrPrefix := netip.PrefixFrom(addr, addr.BitLen())
-	lb := &LocoBackend{
+	lb := &locoBackend{
 		logf:       log.Printf,
 		priv:       priv,
 		pub:        pub,
@@ -139,7 +141,7 @@ func NewLocoBackend(priv key.NodePrivate) *LocoBackend {
 }
 
 // must be called before (not concurrently with) Start.
-func (lb *LocoBackend) DiscoverDERPMap() error {
+func (lb *locoBackend) DiscoverDERPMap() error {
 	// TODO: fetch/cache+test derpmap
 
 	sea := &tailcfg.DERPRegion{
@@ -164,7 +166,7 @@ func (lb *LocoBackend) DiscoverDERPMap() error {
 	return nil
 }
 
-func (lb *LocoBackend) ConnBlob() ConnBlob {
+func (lb *locoBackend) ConnBlob() ConnBlob {
 	if lb.dm == nil {
 		panic("no DERPMap set")
 	}
@@ -201,8 +203,7 @@ func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 	return ci, nil
 }
 
-func (lb *LocoBackend) Start() error {
-
+func (lb *locoBackend) Start() error {
 	if err := lb.ns.Start(nil /* no LocalBackend */); err != nil {
 		return fmt.Errorf("failed to start netstack: %w", err)
 	}
@@ -216,25 +217,61 @@ func (lb *LocoBackend) Start() error {
 
 	nm := &netmap.NetworkMap{
 		PrivateKey: lb.priv,
-		SelfNode: (&tailcfg.Node{
-			ID:        1,
-			StableID:  "1",
-			Name:      "server.derpcat.",
+	}
+	if lb.serverPub.IsZero() {
+		// We're the server. (hence the serverPub is zero)
+		nm.SelfNode = (&tailcfg.Node{
+			ID:         1,
+			StableID:   "1",
+			Name:       "server.derpcat.",
+			User:       100,
+			Key:        lb.pub,
+			DiscoKey:   mc.DiscoPublicKey(), // TODO: change how disco works
+			Addresses:  []netip.Prefix{lb.addrPrefix},
+			AllowedIPs: []netip.Prefix{lb.addrPrefix},
+		}).View()
+	} else {
+		// We're the client.
+		serverAddr := dcAddrForKey(lb.serverPub)
+		serverAddrPrefix := netip.PrefixFrom(serverAddr, serverAddr.BitLen())
+
+		nm.SelfNode = (&tailcfg.Node{
+			ID:        2,
+			StableID:  "2",
+			Name:      "client.derpcat.",
 			User:      100,
 			Key:       lb.pub,
 			DiscoKey:  mc.DiscoPublicKey(), // TODO: change how disco works
 			Addresses: []netip.Prefix{lb.addrPrefix},
-		}).View(),
+		}).View()
+		nm.Peers = append(nm.Peers, (&tailcfg.Node{
+			ID:         1,
+			StableID:   "1",
+			Name:       "server.derpcat.",
+			User:       100,
+			Key:        lb.serverPub,
+			DiscoKey:   key.NewDisco().Public(), // TODO: change how disco works. This is dummy placeholder to placate magicsock for now
+			Addresses:  []netip.Prefix{serverAddrPrefix},
+			AllowedIPs: []netip.Prefix{serverAddrPrefix},
+		}).View())
 	}
 	e.SetNetworkMap(nm)
 	mc.SetNetworkUp(true)
+	lb.logf("NetworkMap: %v", logger.AsJSON(nm))
 
 	wgConf := &wgcfg.Config{
-		Name:       "server",
+		Name:       "self",
 		PrivateKey: lb.priv,
 		Addresses:  []netip.Prefix{lb.addrPrefix},
 		MTU:        1280,
 		Peers:      []wgcfg.Peer{}, // TODO: add peers dynamically as they disco to us
+	}
+	if !lb.serverPub.IsZero() {
+		// We're the client. Add our server as a peer.
+		wgConf.Peers = append(wgConf.Peers, wgcfg.Peer{
+			PublicKey:  lb.serverPub,
+			AllowedIPs: nm.Peers[0].AllowedIPs().AsSlice(),
+		})
 	}
 	routerConf := &router.Config{
 		LocalAddrs: []netip.Prefix{lb.addrPrefix},
@@ -248,7 +285,7 @@ func (lb *LocoBackend) Start() error {
 	return nil
 }
 
-func (b *LocoBackend) Status() *ipnstate.Status {
+func (b *locoBackend) Status() *ipnstate.Status {
 	mc := b.sys.MagicSock.Get()
 	eng := b.sys.Engine.Get()
 	var sb ipnstate.StatusBuilder
@@ -294,7 +331,8 @@ func createEngine(logf logger.Logf, sys *tsd.System) (err error) {
 }
 
 type Client struct {
-	lb *LocoBackend
+	lb *locoBackend
+	ci ConnInfo // of server
 }
 
 func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
@@ -304,9 +342,10 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	}
 
 	priv := key.NewNode()
-	lb := NewLocoBackend(priv)
+	lb := newLocoBackend(priv)
 	lb.logf = logf
 	lb.dm = &tailcfg.DERPMap{}
+	lb.serverPub = ci.ServerPub
 	for _, r := range ci.Region {
 		mak.Set(&lb.dm.Regions, r.RegionID, r)
 	}
@@ -333,8 +372,8 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("newNetstack: %w", err)
 	}
-	ns.ProcessLocalIPs = true
-	ns.ProcessSubnets = true
+	ns.ProcessLocalIPs = false
+	ns.ProcessSubnets = false
 	lb.ns = ns
 
 	e := sys.Engine.Get()
@@ -347,9 +386,39 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	}
 
 	return &Client{
+		ci: ci,
 		lb: lb,
 	}, nil
 }
 
 func (c *Client) Start() error { return c.lb.Start() }
 func (c *Client) Close() error { return c.lb.Close() }
+
+type PingResult struct {
+	Latency time.Duration
+}
+
+func (c *Client) Ping(ctx context.Context) (PingResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var zero PingResult
+
+	t0 := time.Now()
+	mc := c.lb.sys.MagicSock.Get()
+
+	resc := make(chan *ipnstate.PingResult, 1)
+	res := &ipnstate.PingResult{}
+	mc.DerpCatPing(c.ci.ServerPub, res, func(pr *ipnstate.PingResult) {
+		resc <- pr
+	})
+	select {
+	case pr := <-resc:
+		if pr.Err != "" {
+			return zero, errors.New(pr.Err)
+		}
+		return PingResult{time.Since(t0)}, nil
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	}
+}
