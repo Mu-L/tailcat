@@ -445,6 +445,8 @@ func createEngine(logf logger.Logf, sys *tsd.System) (err error) {
 type Client struct {
 	lb *locoBackend
 	ci ConnInfo // of server
+
+	serverAddr netip.Addr
 }
 
 func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
@@ -501,8 +503,9 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	}
 
 	return &Client{
-		ci: ci,
-		lb: lb,
+		ci:         ci,
+		lb:         lb,
+		serverAddr: dcAddrForKey(ci.ServerPublic()),
 	}, nil
 }
 
@@ -537,6 +540,14 @@ func (c *Client) Ping(ctx context.Context) (PingResult, error) {
 	case <-ctx.Done():
 		return zero, ctx.Err()
 	}
+}
+
+func (c *Client) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	return c.lb.sys.Dialer.Get().UserDial(ctx, network, addr)
+}
+
+func (c *Client) DialTCPPort(ctx context.Context, port uint16) (net.Conn, error) {
+	return c.lb.sys.Dialer.Get().UserDial(ctx, "tcp", net.JoinHostPort(c.serverAddr.String(), fmt.Sprint(port)))
 }
 
 func pfxOf(a netip.Addr) netip.Prefix {
