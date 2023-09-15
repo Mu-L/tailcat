@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	go4mem "go4.org/mem"
+	"tailscale.com/envknob"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/ipn/store/mem"
@@ -39,8 +41,13 @@ import (
 type ConnBlob string
 
 type ConnInfo struct {
-	ServerPub key.NodePublic        `cbor:"p"`
-	Region    []*tailcfg.DERPRegion `cbor:"r"`
+	ServerPubBytes [32]byte              `cbor:"p"` // a key.NodePublic
+	Region         []*tailcfg.DERPRegion `cbor:"r"`
+}
+
+func (ci ConnInfo) ServerPublic() key.NodePublic {
+	raw := go4mem.B(ci.ServerPubBytes[:])
+	return key.NodePublicFromRaw32(raw)
 }
 
 // locoBackend is like tailscaled's LocalBackend, but crazier.
@@ -189,12 +196,14 @@ func PickRegion() (*tailcfg.DERPRegion, error) {
 	}, nil
 }
 
+var debugConnBlob = envknob.Bool("TS_DEBUG_CONNBLOB")
+
 func (lb *locoBackend) ConnBlob() ConnBlob {
 	if lb.dm == nil {
 		panic("no DERPMap set")
 	}
 	var ci ConnInfo
-	ci.ServerPub = lb.pub
+	ci.ServerPubBytes = lb.pub.Raw32()
 	for _, r := range lb.dm.Regions {
 		ci.Region = append(ci.Region, r)
 	}
@@ -202,9 +211,16 @@ func (lb *locoBackend) ConnBlob() ConnBlob {
 		panic("no regions in derpmap")
 	}
 
+	if debugConnBlob {
+		log.Printf("ConnBlob: %v", logger.AsJSON(ci))
+	}
+
 	x, err := cbor.Marshal(&ci)
 	if err != nil {
 		panic(err)
+	}
+	if debugConnBlob {
+		log.Printf("ConnBlob: %q", x)
 	}
 	return "derpcat_" + ConnBlob(base64.URLEncoding.EncodeToString(x))
 }
@@ -441,7 +457,7 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	lb := newLocoBackend(priv)
 	lb.logf = logf
 	lb.dm = &tailcfg.DERPMap{}
-	lb.serverPub = ci.ServerPub
+	lb.serverPub = ci.ServerPublic()
 	for _, r := range ci.Region {
 		mak.Set(&lb.dm.Regions, r.RegionID, r)
 	}
@@ -509,7 +525,7 @@ func (c *Client) Ping(ctx context.Context) (PingResult, error) {
 
 	resc := make(chan *ipnstate.PingResult, 1)
 	res := &ipnstate.PingResult{}
-	mc.DerpCatPing(c.ci.ServerPub, res, func(pr *ipnstate.PingResult) {
+	mc.DerpCatPing(c.ci.ServerPublic(), res, func(pr *ipnstate.PingResult) {
 		resc <- pr
 	})
 	select {

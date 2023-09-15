@@ -1,17 +1,24 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"tailscale.com/derp"
+	"tailscale.com/derp/derphttp"
 	"tailscale.com/derpcat"
+	"tailscale.com/envknob"
+	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/set"
@@ -80,9 +87,14 @@ func server(logf logger.Logf) {
 		log.Fatalf("invalid value in --ports: %v", err)
 	}
 
-	reg, err := derpcat.PickRegion()
-	if err != nil {
-		log.Fatalf("finding DERP region: %v", err)
+	var reg *tailcfg.DERPRegion
+	if envknob.Bool("TS_DEBUG_DC_LOCAL_DERP") {
+		reg = runDevDERP(logger.WithPrefix(logf, "[dev-derp] "))
+	} else {
+		reg, err = derpcat.PickRegion()
+		if err != nil {
+			log.Fatalf("finding DERP region: %v", err)
+		}
 	}
 	priv := key.NewNode()
 	s, err := derpcat.NewServer(priv, logf, reg)
@@ -173,4 +185,36 @@ func parsePortSet(s string) (set.Set[uint16], error) {
 		}
 	}
 	return ret, nil
+}
+
+func runDevDERP(logf logger.Logf) *tailcfg.DERPRegion {
+	d := derp.NewServer(key.NewNode(), logf)
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		panic(err)
+	}
+
+	logf("starting dev derp on %v ...", ln.Addr())
+
+	httpsrv := httptest.NewUnstartedServer(derphttp.Handler(d))
+	httpsrv.Listener = ln
+	httpsrv.Config.ErrorLog = logger.StdLogger(logf)
+	httpsrv.Config.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+	httpsrv.StartTLS()
+
+	return &tailcfg.DERPRegion{
+		RegionID: 1,
+		Nodes: []*tailcfg.DERPNode{
+			{
+				Name:             "t1",
+				RegionID:         1,
+				HostName:         "T",
+				IPv4:             "127.0.0.1",
+				IPv6:             "-",
+				STUNPort:         -1,
+				DERPPort:         httpsrv.Listener.Addr().(*net.TCPAddr).Port,
+				InsecureForTests: true,
+			},
+		},
+	}
 }
