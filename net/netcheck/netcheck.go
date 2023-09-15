@@ -1046,6 +1046,7 @@ var noRedirectClient = &http.Client{
 //
 // The boolean return is whether we think we have a captive portal.
 func (c *Client) checkCaptivePortal(ctx context.Context, dm *tailcfg.DERPMap, preferredDERP int) (bool, error) {
+	return false, nil
 	defer noRedirectClient.CloseIdleConnections()
 
 	// If we have a preferred DERP region with more than one node, try

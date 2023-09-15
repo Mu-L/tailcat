@@ -96,7 +96,7 @@ func TestDERPCat(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := c.lb.sys.Dialer.Get().UserDial(ctx, "tcp", net.JoinHostPort(s.lb.addr.String(), "80"))
+	conn, err := c.DialTCPPort(ctx, 80)
 	if err != nil {
 		t.Fatalf("UserDial = %v, %v", conn, err)
 	}
