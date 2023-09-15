@@ -86,7 +86,7 @@ type DERPRegion struct {
 	// RegionCode is a short name for the region. It's usually a popular
 	// city or airport code in the region: "nyc", "sf", "sin",
 	// "fra", etc.
-	RegionCode string `cbor:",omitempty"`
+	RegionCode string `cbor:"co,omitempty"`
 
 	// RegionName is a long English name for the region: "New York City",
 	// "San Francisco", "Singapore", "Frankfurt", etc.
@@ -123,17 +123,17 @@ type DERPNode struct {
 	// It is not a host name.
 	// It's typically of the form "1b", "2a", "3b", etc. (region
 	// ID + suffix within that region)
-	Name string `json:",omitempty"`
+	Name string `json:",omitempty" cbor:"n,omitempty"`
 
 	// RegionID is the RegionID of the DERPRegion that this node
 	// is running in.
-	RegionID int `json:",omitempty"`
+	RegionID int `json:",omitempty" cbor:"rid,omitempty"`
 
 	// HostName is the DERP node's hostname.
 	//
 	// It is required but need not be unique; multiple nodes may
 	// have the same HostName but vary in configuration otherwise.
-	HostName string `cbor:"hn,omitempty"`
+	HostName string `cbor:"hn,omitempty" cbor:"hn,omitempty"`
 
 	// CertName optionally specifies the expected TLS cert common
 	// name. If empty, HostName is used. If CertName is non-empty,
@@ -158,7 +158,7 @@ type DERPNode struct {
 	// Port optionally specifies a STUN port to use.
 	// Zero means 3478.
 	// To disable STUN on this node, use -1.
-	STUNPort int `json:",omitempty"`
+	STUNPort int `json:",omitempty" cbor:"sp,omitempty"`
 
 	// STUNOnly marks a node as only a STUN server and not a DERP
 	// server.
@@ -168,11 +168,11 @@ type DERPNode struct {
 	// for the DERP HTTPS server.
 	//
 	// If zero, 443 is used.
-	DERPPort int `json:",omitempty"`
+	DERPPort int `json:",omitempty" cbor:"dp,omitempty"`
 
 	// InsecureForTests is used by unit tests to disable TLS verification.
 	// It should not be set by users.
-	InsecureForTests bool `json:",omitempty"`
+	InsecureForTests bool `json:",omitempty" cbor:"in,omitempty"`
 
 	// STUNTestIP is used in tests to override the STUN server's IP.
 	// If empty, it's assumed to be the same as the DERP server.
