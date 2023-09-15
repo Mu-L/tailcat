@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -92,7 +93,11 @@ func main() {
 		return
 	}
 	if len(args) >= 3 && args[0] == "socks" {
-		clientSocksMode(logf)
+		clientSOCKSMode(logf)
+		return
+	}
+	if len(args) >= 2 && args[0] == "ssh" {
+		clientSSHMode(logf)
 		return
 	}
 
@@ -163,7 +168,7 @@ func main() {
 	panic("TODO")
 }
 
-func clientSocksMode(logf logger.Logf) {
+func clientSOCKSMode(logf logger.Logf) {
 	args := flag.Args()
 	progArgs := args[2:]
 
@@ -213,6 +218,29 @@ func clientSocksMode(logf logger.Logf) {
 	if err := cmd.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func clientSSHMode(logf logger.Logf) {
+	args := flag.Args()
+	dst := args[1] // either a derpaddr alone or "user@<derpaddr>"
+
+	connBlobStr := dst
+	if strings.Contains(dst, "@") {
+		_, connBlobStr, _ = strings.Cut(dst, "@")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatal(err)
+	}
+	argv := []string{
+		"/usr/bin/ssh",
+		"-o", "UpdateHostKeys no",
+		"-o", "StrictHostKeyChecking no",
+		"-o", fmt.Sprintf("ProxyCommand=%s %s 22", exe, connBlobStr),
+		dst,
+	}
+	err = syscall.Exec("/usr/bin/ssh", argv, os.Environ())
+	log.Fatalf("failed to exec: %v", err)
 }
 
 func server(logf logger.Logf) {
