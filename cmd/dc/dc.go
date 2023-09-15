@@ -1,6 +1,9 @@
 package main
 
+// TODO: in dev derp mode: 2023/09/14 21:26:25 magicsock: last netcheck reported send error. Rebinding.
+
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -14,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/derpcat"
@@ -78,6 +82,50 @@ func main() {
 		server(logf)
 		return
 	}
+
+	if len(args) == 1 {
+		cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(args[0]))
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := cl.Start(); err != nil {
+			log.Fatal(err)
+		}
+		pi, err := cl.Ping(context.Background())
+		if err != nil {
+			log.Fatalf("Ping: %v", err)
+		}
+		logf("got ping: %+v", pi)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c, err := cl.DialTCPPort(ctx, 80)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("starting copy to %T ...", c)
+		n, err := io.Copy(c, os.Stdin)
+		log.Printf("Did copy: %v, %v", n, err)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := c.(*gonet.TCPConn).CloseWrite(); err != nil {
+			log.Fatal(err)
+		}
+
+		// TODO(bradfitz): figure out more why this trashy sleep is required. It
+		// seems that without it, our CloseWrite above never makes it out onto
+		// the network (no OS kernel to deal with it async after we os.Exit!).
+		// So we need to give it some time to send via DERP, etc. But where
+		// exactly is the buffering happening? The magicsock derp conn send,
+		// almost certainly. Maybe we can ask magicsock for its tx count before
+		// the CloseWrite and then wait for it to change, and then exit?
+		// But even then, do we want an ACK for our RST? Can we ask gvisor for
+		// that? Poll the gonet.TCPConn status or something?
+		time.Sleep(500 * time.Millisecond)
+
+		return
+	}
 	panic("TODO")
 }
 
@@ -106,7 +154,11 @@ func server(logf logger.Logf) {
 		if len(portSet) == 0 {
 			return func(c net.Conn) {
 				defer c.Close()
-				io.Copy(os.Stdout, c)
+				_, err := io.Copy(os.Stdout, c)
+				if err != nil {
+					log.Fatal(err)
+				}
+				os.Exit(0)
 			}
 		}
 		if !portSet.Contains(port) {
@@ -203,7 +255,8 @@ func runDevDERP(logf logger.Logf) *tailcfg.DERPRegion {
 	httpsrv.StartTLS()
 
 	return &tailcfg.DERPRegion{
-		RegionID: 1,
+		RegionID:   1,
+		RegionCode: "D",
 		Nodes: []*tailcfg.DERPNode{
 			{
 				Name:             "t1",
@@ -211,7 +264,7 @@ func runDevDERP(logf logger.Logf) *tailcfg.DERPRegion {
 				HostName:         "T",
 				IPv4:             "127.0.0.1",
 				IPv6:             "-",
-				STUNPort:         -1,
+				STUNPort:         0, // default (TODO: actually run a STUN server in this func)
 				DERPPort:         httpsrv.Listener.Addr().(*net.TCPAddr).Port,
 				InsecureForTests: true,
 			},
