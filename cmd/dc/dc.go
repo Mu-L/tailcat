@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/derpcat"
 	"tailscale.com/envknob"
+	"tailscale.com/net/socks5"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
@@ -62,6 +64,13 @@ Client mode to an explicit pipe:
 Client mode, ssh:
 
 	dc ssh <derpaddr>
+
+Client mode, run an ephemeral socks (socks5h) proxy and pass
+its address as 'all_proxy' environment variable to a child
+process:
+
+	dc socks <derpaddr> <cmd> [args...]
+	dc socks <derpaddr> curl http://server.derpcat:8081/
 `)
 	os.Exit(1)
 }
@@ -82,8 +91,21 @@ func main() {
 		server(logf)
 		return
 	}
+	if len(args) >= 3 && args[0] == "socks" {
+		clientSocksMode(logf)
+		return
+	}
 
-	if len(args) == 1 {
+	if (len(args) == 1 || len(args) == 2) && strings.HasPrefix(args[0], "derpcat_") {
+		var port uint16 // default 0
+		if len(args) == 2 {
+			portStr := args[1]
+			port64, err := strconv.ParseUint(portStr, 10, 16)
+			if err != nil {
+				usage(fmt.Sprintf("invalid port number %q", portStr))
+			}
+			port = uint16(port64)
+		}
 		cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(args[0]))
 		if err != nil {
 			log.Fatal(err)
@@ -99,34 +121,98 @@ func main() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		c, err := cl.DialTCPPort(ctx, 80)
+		c, err := cl.DialTCPPort(ctx, port)
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("starting copy to %T ...", c)
-		n, err := io.Copy(c, os.Stdin)
-		log.Printf("Did copy: %v, %v", n, err)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := c.(*gonet.TCPConn).CloseWrite(); err != nil {
-			log.Fatal(err)
-		}
+		rxErr := make(chan error, 1)
+		txErr := make(chan error, 1)
+		go func() {
+			_, err := io.Copy(os.Stdout, c)
+			rxErr <- err
+		}()
+		go func() {
+			log.Printf("starting copy to %T ...", c)
+			_, err := io.Copy(c, os.Stdin)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := c.(*gonet.TCPConn).CloseWrite(); err != nil {
+				log.Fatal(err)
+			}
+			// TODO(bradfitz): figure out more why this trashy sleep is required. It
+			// seems that without it, our CloseWrite above never makes it out onto
+			// the network (no OS kernel to deal with it async after we os.Exit!).
+			// So we need to give it some time to send via DERP, etc. But where
+			// exactly is the buffering happening? The magicsock derp conn send,
+			// almost certainly. Maybe we can ask magicsock for its tx count before
+			// the CloseWrite and then wait for it to change, and then exit?
+			// But even then, do we want an ACK for our RST? Can we ask gvisor for
+			// that? Poll the gonet.TCPConn status or something?
+			time.Sleep(500 * time.Millisecond)
+			txErr <- nil
+		}()
 
-		// TODO(bradfitz): figure out more why this trashy sleep is required. It
-		// seems that without it, our CloseWrite above never makes it out onto
-		// the network (no OS kernel to deal with it async after we os.Exit!).
-		// So we need to give it some time to send via DERP, etc. But where
-		// exactly is the buffering happening? The magicsock derp conn send,
-		// almost certainly. Maybe we can ask magicsock for its tx count before
-		// the CloseWrite and then wait for it to change, and then exit?
-		// But even then, do we want an ACK for our RST? Can we ask gvisor for
-		// that? Poll the gonet.TCPConn status or something?
-		time.Sleep(500 * time.Millisecond)
-
+		// TODO(bradfitz): probably more ehre
+		select {
+		case <-txErr:
+		case <-rxErr:
+		}
 		return
 	}
 	panic("TODO")
+}
+
+func clientSocksMode(logf logger.Logf) {
+	args := flag.Args()
+	progArgs := args[2:]
+
+	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(args[1]))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := cl.Start(); err != nil {
+		log.Fatal(err)
+	}
+	pi, err := cl.Ping(context.Background())
+	if err != nil {
+		log.Fatalf("Ping: %v", err)
+	}
+	logf("got ping: %+v", pi)
+
+	socksLn, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		log.Fatal(err)
+	}
+	ss := &socks5.Server{
+		Logf: logger.WithPrefix(logf, "socks5: "),
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			portNum, err := strconv.ParseUint(port, 10, 16)
+			if err != nil {
+				return nil, err
+			}
+			return cl.DialTCPPort(ctx, uint16(portNum))
+		},
+	}
+	go func() {
+		log.Fatalf("SOCKS5 server exited: %v", ss.Serve(socksLn))
+	}()
+	socksAddr := "socks5h://" + socksLn.Addr().String()
+	logf("SOCKS running at %v", socksAddr)
+	cmd := exec.Command(progArgs[0], progArgs[1:]...)
+	cmd.Env = append(os.Environ(),
+		"all_proxy="+socksAddr,
+	)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func server(logf logger.Logf) {
@@ -183,13 +269,17 @@ func server(logf logger.Logf) {
 			}()
 			<-errc
 		}
-
 	}
 
 	if err := s.Start(); err != nil {
 		log.Fatalf("Server.Start: %v", err)
 	}
 	fmt.Fprintf(os.Stderr, "Server derpaddr: %v\n", s.ConnBlob())
+	if v := os.Getenv("DC_ADDR_FILE"); v != "" {
+		if err := os.WriteFile(v, []byte(s.ConnBlob()), 0600); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	if *flagVerbose {
 		go func() {
