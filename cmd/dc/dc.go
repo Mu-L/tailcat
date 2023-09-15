@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -77,7 +79,6 @@ func server(logf logger.Logf) {
 	if err != nil {
 		log.Fatalf("invalid value in --ports: %v", err)
 	}
-	log.Printf("ports: %v", portSet)
 
 	reg, err := derpcat.PickRegion()
 	if err != nil {
@@ -88,6 +89,39 @@ func server(logf logger.Logf) {
 	if err != nil {
 		log.Fatalf("NewServer: %v", err)
 	}
+
+	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
+		if len(portSet) == 0 {
+			return func(c net.Conn) {
+				defer c.Close()
+				io.Copy(os.Stdout, c)
+			}
+		}
+		if !portSet.Contains(port) {
+			return nil // RST
+		}
+		return func(c net.Conn) {
+			defer c.Close()
+			localConn, err := net.Dial("tcp", fmt.Sprintf("localhost:%v", port))
+			if err != nil {
+				logf("error proxying to localhost:%v: %v", port, err)
+				return
+			}
+			defer localConn.Close()
+			errc := make(chan error, 1)
+			go func() {
+				_, err := io.Copy(c, localConn)
+				errc <- err
+			}()
+			go func() {
+				_, err := io.Copy(localConn, c)
+				errc <- err
+			}()
+			<-errc
+		}
+
+	}
+
 	if err := s.Start(); err != nil {
 		log.Fatalf("Server.Start: %v", err)
 	}
@@ -105,6 +139,9 @@ func server(logf logger.Logf) {
 }
 
 func parsePortSet(s string) (set.Set[uint16], error) {
+	if s == "" {
+		return nil, nil
+	}
 	ret := set.Set[uint16]{}
 	s = strings.TrimSpace(s)
 	if s == "all" {
