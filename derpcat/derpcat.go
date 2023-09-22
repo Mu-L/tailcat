@@ -233,7 +233,29 @@ func (lb *locoBackend) ConnBlob() ConnBlob {
 }
 
 func (ci *ConnInfo) ConnBlob() ConnBlob {
-	x, err := cbor.Marshal(ci)
+	// Clone the DERPRegions (and their nodes) and mutate them to
+	// zero out some fields before marshalling to save some space
+	// and make the ConnBlob smaller. The same transforms are done on
+	// the way back.
+	mut := *ci
+	mut.Region = make([]*tailcfg.DERPRegion, len(ci.Region))
+	for i, r := range ci.Region {
+		r2 := r.Clone()
+		mut.Region[i] = r2
+
+		// Remove some fields vbefore
+		r2.RegionID = 0
+		r2.RegionCode = ""
+		for _, n := range r2.Nodes {
+			n.RegionID = 0
+			implicitHost := "derp" + n.Name + ".tailscale.com"
+			if n.HostName == implicitHost {
+				n.HostName = ""
+			}
+		}
+	}
+
+	x, err := cbor.Marshal(&mut)
 	if err != nil {
 		panic(err)
 	}

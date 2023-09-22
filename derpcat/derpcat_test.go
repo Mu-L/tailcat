@@ -166,6 +166,7 @@ func TestConnBlob(t *testing.T) {
 				},
 			},
 		},
+
 		{
 			name: "ts_region",
 			ci: ConnInfo{
@@ -206,6 +207,53 @@ func TestConnBlob(t *testing.T) {
 				},
 			},
 		},
+
+		{
+			name: "remove_implicit_fields_on_marshal",
+			ci: ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				Region: []*tailcfg.DERPRegion{
+					{
+						RegionID: 123, // gets scrubbed, changed to 1
+						Nodes: []*tailcfg.DERPNode{
+							{
+								RegionID: 123, // gets scrubbed, changed to 1
+								Name:     "1a",
+								HostName: "derp1a.tailscale.com",
+							},
+							{
+								RegionID: 123, // gets scrubbed, changed to 1
+								Name:     "1b",
+								HostName: "derp1b-non-default-value.tailscale.com",
+							},
+						},
+					},
+				},
+			},
+			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhomFuYjFiYmhueCZkZXJwMWItbm9uLWRlZmF1bHQtdmFsdWUudGFpbHNjYWxlLmNvbQ",
+			back: &ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				Region: []*tailcfg.DERPRegion{
+					{
+						RegionID:   1,
+						RegionCode: "1",
+						Nodes: []*tailcfg.DERPNode{
+							{
+								RegionID: 1,
+								Name:     "1a",
+								HostName: "derp1a.tailscale.com",
+							},
+							{
+								RegionID: 1,
+								Name:     "1b",
+								HostName: "derp1b-non-default-value.tailscale.com",
+							},
+						},
+					},
+				},
+			},
+		},
+
 		{
 			name: "region_id",
 			ci: ConnInfo{
