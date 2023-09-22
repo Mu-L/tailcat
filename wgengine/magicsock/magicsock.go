@@ -775,6 +775,12 @@ func (c *Conn) DerpCatPing(dst key.NodePublic, res *ipnstate.PingResult, cb func
 		cb(res)
 		return
 	}
+
+	// TODO(bradfitz): actually wait for the reply from the server.
+	// For now, just sleep to give it some time to reprogram things.
+	// This is trashy.
+	time.Sleep(time.Second / 3)
+
 	cb(res)
 }
 
