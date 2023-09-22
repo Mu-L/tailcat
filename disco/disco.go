@@ -44,6 +44,7 @@ const (
 	TypePing        = MessageType(0x01)
 	TypePong        = MessageType(0x02)
 	TypeCallMeMaybe = MessageType(0x03)
+	TypeMeowed      = MessageType(0x04) // derpcat server tells client that the client was added to the netmap
 )
 
 const v0 = byte(0)
@@ -83,6 +84,8 @@ func Parse(p []byte) (Message, error) {
 		return parsePong(ver, p)
 	case TypeCallMeMaybe:
 		return parseCallMeMaybe(ver, p)
+	case TypeMeowed:
+		return &Meowed{}, nil
 	default:
 		return nil, fmt.Errorf("unknown message type 0x%02x", byte(t))
 	}
@@ -276,4 +279,11 @@ func MessageSummary(m Message) string {
 	default:
 		return fmt.Sprintf("%#v", m)
 	}
+}
+
+type Meowed struct{}
+
+func (m *Meowed) AppendMarshal(b []byte) []byte {
+	ret, _ := appendMsgHeader(b, TypeMeowed, v0, 0)
+	return ret
 }
