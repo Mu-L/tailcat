@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -81,6 +83,7 @@ type locoBackend struct {
 
 	mu      sync.Mutex
 	clients map[key.NodePublic]*tailcfg.Node // for the server
+	nm      *netmap.NetworkMap
 }
 
 func (b *locoBackend) Close() error {
@@ -320,6 +323,7 @@ func (lb *locoBackend) Start() error {
 		PrivateKey: lb.priv,
 	}
 	if lb.serverPub.IsZero() {
+		nm.SSHPolicy = lb.sshPolicy()
 		// We're the server. (hence the serverPub is zero)
 		discoPriv := lb.priv.AsDiscoPrivate()
 		mc.SetDisco(discoPriv)
@@ -363,6 +367,10 @@ func (lb *locoBackend) Start() error {
 			DERP:       "127.3.3.40:1",
 		}).View())
 	}
+	lb.mu.Lock()
+	lb.nm = nm
+	lb.mu.Unlock()
+
 	e.SetNetworkMap(nm)
 	lb.sys.Netstack.Get().UpdateNetstackIPs(nm)
 	mc.SetNetworkUp(true)
@@ -415,6 +423,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 
 	nm := &netmap.NetworkMap{
 		PrivateKey: b.priv,
+		SSHPolicy:  b.sshPolicy(),
 		SelfNode: (&tailcfg.Node{
 			ID:         1,
 			StableID:   "1",
@@ -433,6 +442,8 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 	slices.SortFunc(nm.Peers, func(a, b tailcfg.NodeView) int {
 		return cmpx.Compare(a.ID(), b.ID())
 	})
+	b.nm = nm
+
 	eng := b.sys.Engine.Get()
 	eng.SetNetworkMap(nm)
 	b.sys.Netstack.Get().UpdateNetstackIPs(nm)
@@ -626,4 +637,61 @@ func pfxOf(a netip.Addr) netip.Prefix {
 
 func (s *Server) Status() *ipnstate.Status {
 	return s.lb.Status()
+}
+
+func (b *locoBackend) Dialer() *tsdial.Dialer {
+	return b.sys.Dialer.Get()
+}
+
+func (b *locoBackend) DoNoiseRequest(req *http.Request) (*http.Response, error) {
+	return nil, errors.New("not needed")
+}
+
+func (b *locoBackend) NetMap() *netmap.NetworkMap {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.nm
+}
+
+func (b *locoBackend) NodeKey() key.NodePublic {
+	return b.pub
+}
+
+func (b *locoBackend) TailscaleVarRoot() string {
+	// only needed by tailssh.sshSession for recording
+	// SSH sessions which isn't enabled.
+	panic("unused")
+}
+
+func (b *locoBackend) WhoIs(ipp netip.AddrPort) (n tailcfg.NodeView, u tailcfg.UserProfile, ok bool) {
+	nv := (&tailcfg.Node{
+		ID:       1,
+		StableID: "one",
+		User:     100,
+	}).View()
+	up := tailcfg.UserProfile{
+		DisplayName: "Peer",
+	}
+	return nv, up, true
+}
+
+func (b *locoBackend) sshPolicy() *tailcfg.SSHPolicy {
+	return &tailcfg.SSHPolicy{
+		Rules: []*tailcfg.SSHRule{
+			{
+				Principals: []*tailcfg.SSHPrincipal{{Any: true}},
+				SSHUsers:   map[string]string{"*": os.Getenv("USER")},
+				Action: &tailcfg.SSHAction{
+					Message: "Welcome to DERPcat SSH.\n\n",
+					Accept:  true,
+				},
+			},
+		},
+	}
+}
+
+// CanRunSSHServer reports whether the platform supports running a Tailscale SSH
+// (auth-free) server.
+func (s *Server) CanRunSSHServer() bool {
+	return s.lb.ShouldRunSSH() // eh, reuse this method that ssh/tailssh needs of its ipnLocalBackend interface
 }

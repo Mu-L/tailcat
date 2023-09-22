@@ -76,9 +76,10 @@ type ipnLocalBackend interface {
 }
 
 type server struct {
-	lb             ipnLocalBackend
-	logf           logger.Logf
-	tailscaledPath string
+	lb              ipnLocalBackend
+	logf            logger.Logf
+	tailscaledPath  string
+	isDERPCatServer bool
 
 	pubKeyHTTPClient *http.Client     // or nil for http.DefaultClient
 	timeNow          func() time.Time // or nil for time.Now
@@ -97,6 +98,15 @@ func (srv *server) now() time.Time {
 		return srv.timeNow()
 	}
 	return time.Now()
+}
+
+func NewDERPCatServer(logf logger.Logf, lb ipnLocalBackend) (handler func(net.Conn) error) {
+	srv := &server{
+		logf:            logf,
+		lb:              lb,
+		isDERPCatServer: true,
+	}
+	return srv.HandleSSHConn
 }
 
 func init() {
@@ -482,6 +492,9 @@ func (srv *server) newConn() (*conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(keys) == 0 {
+		return nil, errors.New("GetSSH_HostKeys returned no keys")
+	}
 	for _, signer := range keys {
 		ss.AddHostKey(signer)
 	}
@@ -600,11 +613,13 @@ func (c *conn) setInfo(ctx ssh.Context) error {
 		src:     toIPPort(ctx.RemoteAddr()),
 		dst:     toIPPort(ctx.LocalAddr()),
 	}
-	if !tsaddr.IsTailscaleIP(ci.dst.Addr()) {
-		return fmt.Errorf("tailssh: rejecting non-Tailscale local address %v", ci.dst)
-	}
-	if !tsaddr.IsTailscaleIP(ci.src.Addr()) {
-		return fmt.Errorf("tailssh: rejecting non-Tailscale remote address %v", ci.src)
+	if !c.srv.isDERPCatServer {
+		if !tsaddr.IsTailscaleIP(ci.dst.Addr()) {
+			return fmt.Errorf("tailssh: rejecting non-Tailscale local address %v", ci.dst)
+		}
+		if !tsaddr.IsTailscaleIP(ci.src.Addr()) {
+			return fmt.Errorf("tailssh: rejecting non-Tailscale remote address %v", ci.src)
+		}
 	}
 	node, uprof, ok := c.srv.lb.WhoIs("tcp", ci.src)
 	if !ok {
