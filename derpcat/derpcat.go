@@ -523,8 +523,9 @@ func createEngine(logf logger.Logf, sys *tsd.System) (err error) {
 }
 
 type Client struct {
-	lb *locoBackend
-	ci ConnInfo // of server
+	lb       *locoBackend
+	ci       ConnInfo      // of server
+	meowWait chan struct{} // closed on first meowed message from server
 
 	serverAddr netip.Addr
 }
@@ -591,11 +592,16 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 }
 
 func (c *Client) PublicKey() key.NodePublic { return c.lb.pub }
-func (c *Client) Start() error              { return c.lb.Start() }
 func (c *Client) Close() error              { return c.lb.Close() }
 
 type PingResult struct {
 	Latency time.Duration
+}
+
+func (c *Client) Start() error {
+	c.meowWait = make(chan struct{})
+	c.lb.sys.MagicSock.Get().BeDerpCatClient(sync.OnceFunc(func() { close(c.meowWait) }))
+	return c.lb.Start()
 }
 
 func (c *Client) Ping(ctx context.Context) (PingResult, error) {
@@ -617,7 +623,12 @@ func (c *Client) Ping(ctx context.Context) (PingResult, error) {
 		if pr.Err != "" {
 			return zero, errors.New(pr.Err)
 		}
-		return PingResult{time.Since(t0)}, nil
+		select {
+		case <-c.meowWait:
+			return PingResult{time.Since(t0)}, nil
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		}
 	case <-ctx.Done():
 		return zero, ctx.Err()
 	}
