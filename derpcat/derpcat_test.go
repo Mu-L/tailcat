@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tstest"
 	"tailscale.com/tstest/integration"
 	"tailscale.com/types/key"
@@ -102,4 +104,136 @@ func TestDERPCat(t *testing.T) {
 	}
 	all, err := io.ReadAll(conn)
 	t.Logf("Got: %q, %v", all, err)
+}
+
+func TestConnBlob(t *testing.T) {
+	tests := []struct {
+		name string
+		ci   ConnInfo
+		want ConnBlob
+		back *ConnInfo // if non-nil, round-tripped form we want
+	}{
+		{
+			name: "just_key",
+			ci: ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+			},
+			want: "derpcat_oWFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHw",
+		},
+		{
+			name: "key_with_full_custom_region", // worst case (longest length)
+			ci: ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				Region: []*tailcfg.DERPRegion{
+					{
+						Nodes: []*tailcfg.DERPNode{
+							{
+								Name:     "1a",
+								IPv4:     "400.400.400.400",
+								HostName: "my-derp.custom.example",
+							},
+							{
+								Name:     "1b",
+								IPv4:     "400.400.400.400",
+								HostName: "my-derp2.custom.example",
+							},
+						},
+					},
+				},
+			},
+			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6Co2FuYjFhYmhudm15LWRlcnAuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDCjYW5iMWJiaG53bXktZGVycDIuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDA",
+			back: &ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				Region: []*tailcfg.DERPRegion{
+					{
+						RegionID:   1,
+						RegionCode: "1",
+						Nodes: []*tailcfg.DERPNode{
+							{
+								RegionID: 1,
+								Name:     "1a",
+								IPv4:     "400.400.400.400",
+								HostName: "my-derp.custom.example",
+							},
+							{
+								RegionID: 1,
+								Name:     "1b",
+								IPv4:     "400.400.400.400",
+								HostName: "my-derp2.custom.example",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "ts_region",
+			ci: ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				Region: []*tailcfg.DERPRegion{
+					{
+						Nodes: []*tailcfg.DERPNode{
+							{
+								Name: "1a", // if no Hostname, implicitly "derp1a.tailscale.com"
+							},
+							{
+								Name: "1b",
+							},
+						},
+					},
+				},
+			},
+			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhoWFuYjFi",
+			back: &ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				Region: []*tailcfg.DERPRegion{
+					{
+						RegionID:   1,
+						RegionCode: "1",
+						Nodes: []*tailcfg.DERPNode{
+							{
+								RegionID: 1,
+								Name:     "1a",
+								HostName: "derp1a.tailscale.com",
+							},
+							{
+								RegionID: 1,
+								Name:     "1b",
+								HostName: "derp1b.tailscale.com",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "region_id",
+			ci: ConnInfo{
+				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				RegionID:       10,
+			},
+			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FpCg",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.ci.ConnBlob()
+			t.Logf("length: %v (%v)", len(got), got)
+			if got != tt.want {
+				t.Fatalf("ConnInfo.ConnBlob marshal wrong.\n got: %s\nwant: %s\n", got, tt.want)
+			}
+
+			gotCI, err := ParseConnBlob(got)
+			if err != nil {
+				t.Fatalf("ParseConnBlob: %v", err)
+			}
+			want := tt.ci
+			if tt.back != nil {
+				want = *tt.back
+			}
+			if diff := cmp.Diff(want, gotCI); diff != "" {
+				t.Errorf("ParseConnBlob result back diff:\n%s", diff)
+			}
+		})
+	}
 }
