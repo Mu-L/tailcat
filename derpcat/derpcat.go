@@ -56,7 +56,7 @@ type ConnInfo struct {
 	// DERP servers. If set, Region may be omitted and the ConnBlob
 	// is shorter, at the cost of the client needing to fetch
 	// the derpmap from tailscale.com once at startup.
-	RegionID int `cbor:"i,omitempty"`
+	RegionID int `cbor:"i,omitempty" json:",omitempty"`
 }
 
 func (ci ConnInfo) ServerPublic() key.NodePublic {
@@ -119,7 +119,13 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 
 	lb.logf = logf
 	lb.dm = &tailcfg.DERPMap{}
+	if len(regs) != 1 {
+		return nil, fmt.Errorf("exactly 1 DERPRegion required for now, not %v", len(regs))
+	}
 	for _, r := range regs {
+		if r.RegionID == 0 {
+			return nil, fmt.Errorf("missing RegionID in %v", logger.AsJSON(r))
+		}
 		mak.Set(&lb.dm.Regions, r.RegionID, r)
 	}
 
