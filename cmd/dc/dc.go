@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -98,6 +99,10 @@ func main() {
 	}
 	if len(args) >= 2 && args[0] == "ssh" {
 		clientSSHMode(logf)
+		return
+	}
+	if len(args) >= 2 && args[0] == "parse" {
+		clientParseMode(logf)
 		return
 	}
 
@@ -220,6 +225,18 @@ func clientSOCKSMode(logf logger.Logf) {
 	}
 }
 
+func clientParseMode(logf logger.Logf) {
+	args := flag.Args()
+	dst := args[1]
+	ci, err := derpcat.ParseConnBlob(derpcat.ConnBlob(dst))
+	if err != nil {
+		log.Fatal(err)
+	}
+	e := json.NewEncoder(os.Stdout)
+	e.SetIndent("", "    ")
+	e.Encode(ci)
+}
+
 func clientSSHMode(logf logger.Logf) {
 	args := flag.Args()
 	dst := args[1] // either a derpaddr alone or "user@<derpaddr>"
@@ -251,6 +268,7 @@ func server(logf logger.Logf) {
 
 	var reg *tailcfg.DERPRegion
 	if envknob.Bool("TS_DEBUG_DC_LOCAL_DERP") {
+		log.Printf("Local DERP mode.")
 		reg = runDevDERP(logger.WithPrefix(logf, "[dev-derp] "))
 	} else {
 		reg, err = derpcat.PickRegion()
