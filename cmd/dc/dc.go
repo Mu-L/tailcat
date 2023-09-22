@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,11 +50,16 @@ Server mode, accept one connection (any port), write to stdout:
 
 Server mode, given ports:
 
-	dc --ports=80,443,8000-8999
+	dc --ports=22,80,443,8000-8999
 
-Server mode, all ports and Tailscale auth-free SSH:
+Server mode, all ports:
 
-	dc --ports=all --ssh-server-no-auth
+	dc --ports=all
+
+Server mode, certain ports and Tailscale SSH (auth without
+password or public key):
+
+	dc --ports=123,tssh
 
 Client mode, to default port 0 for stdin/stdout pipe:
 
@@ -142,7 +148,6 @@ func main() {
 			rxErr <- err
 		}()
 		go func() {
-			log.Printf("starting copy to %T ...", c)
 			_, err := io.Copy(c, os.Stdin)
 			if err != nil {
 				log.Fatal(err)
@@ -261,7 +266,7 @@ func clientSSHMode(logf logger.Logf) {
 }
 
 func server(logf logger.Logf) {
-	portSet, err := parsePortSet(*flagPorts)
+	portSet, services, err := parsePortSet(*flagPorts)
 	if err != nil {
 		log.Fatalf("invalid value in --ports: %v", err)
 	}
@@ -281,8 +286,14 @@ func server(logf logger.Logf) {
 	if err != nil {
 		log.Fatalf("NewServer: %v", err)
 	}
+	if services.Contains("tailscale-ssh") && !s.CanRunSSHServer() {
+		log.Fatalf("Tailscale SSH server not supported on %v", runtime.GOOS)
+	}
 
 	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
+		if port == 22 && services.Contains("tailscale-ssh") {
+			return s.HandleTailscaleSSHConn
+		}
 		if len(portSet) == 0 {
 			return func(c net.Conn) {
 				defer c.Close()
@@ -338,31 +349,36 @@ func server(logf logger.Logf) {
 	select {}
 }
 
-func parsePortSet(s string) (set.Set[uint16], error) {
+func parsePortSet(s string) (ports set.Set[uint16], services set.Set[string], _ error) {
+	services = set.Set[string]{}
 	if s == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	ret := set.Set[uint16]{}
 	s = strings.TrimSpace(s)
-	if s == "all" {
-		for i := 1; i <= 65535; i++ {
-			ret.Add(uint16(i))
-		}
-		return ret, nil
-	}
 
 	for _, r := range strings.Split(s, ",") {
+		switch r {
+		case "all":
+			for i := 1; i <= 65535; i++ {
+				ret.Add(uint16(i))
+			}
+			continue
+		case "tssh":
+			services.Add("tailscale-ssh")
+			continue
+		}
 		a, b, ok := strings.Cut(strings.TrimSpace(r), "-")
 
 		lo, err := strconv.ParseUint(a, 10, 16)
 		if err != nil {
-			return nil, fmt.Errorf("%q is not a valid port number", a)
+			return nil, nil, fmt.Errorf("%q is not a valid port number", a)
 		}
 		hi := lo
 		if ok {
 			hi, err = strconv.ParseUint(b, 10, 16)
 			if err != nil {
-				return nil, fmt.Errorf("%q is not a valid port number", b)
+				return nil, nil, fmt.Errorf("%q is not a valid port number", b)
 			}
 		}
 		if hi < lo {
@@ -372,7 +388,7 @@ func parsePortSet(s string) (set.Set[uint16], error) {
 			ret.Add(uint16(i))
 		}
 	}
-	return ret, nil
+	return ret, services, nil
 }
 
 func runDevDERP(logf logger.Logf) *tailcfg.DERPRegion {
