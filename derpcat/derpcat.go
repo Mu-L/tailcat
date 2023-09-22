@@ -140,6 +140,7 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 		return srv.OnTCP(dst.Port()), true
 	}
 	lb.ns = ns
+	sys.Set(ns)
 
 	e := sys.Engine.Get()
 	e.SetFilter(filter.NewAllowAllForTest(logf)) // TODO: trashy
@@ -252,7 +253,7 @@ func (lb *locoBackend) Start() error {
 	lb.logf("disco pub key: %v", mc.DiscoPublicKey())
 
 	mc.SetPrivateKey(lb.priv)
-	e.SetDERPMap(lb.dm)
+	mc.SetDERPMap(lb.dm)
 
 	nm := &netmap.NetworkMap{
 		PrivateKey: lb.priv,
@@ -301,8 +302,8 @@ func (lb *locoBackend) Start() error {
 			DERP:       "127.3.3.40:1",
 		}).View())
 	}
-	nm.Addresses = nm.SelfNode.Addresses().AsSlice() // dumb redundant field for now
 	e.SetNetworkMap(nm)
+	lb.sys.Netstack.Get().UpdateNetstackIPs(nm)
 	mc.SetNetworkUp(true)
 	lb.logf("NetworkMap: %v", logger.AsJSON(nm))
 
@@ -365,7 +366,6 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 			DERP:       "127.3.3.40:1",
 		}).View(),
 	}
-	nm.Addresses = nm.SelfNode.Addresses().AsSlice() // dumb redundant field for now
 	for _, n := range b.clients {
 		nm.Peers = append(nm.Peers, n.View())
 	}
@@ -374,6 +374,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 	})
 	eng := b.sys.Engine.Get()
 	eng.SetNetworkMap(nm)
+	b.sys.Netstack.Get().UpdateNetstackIPs(nm)
 
 	wgConf := &wgcfg.Config{
 		Name:       "self",
@@ -415,7 +416,14 @@ func dcAddrForKey(k key.NodePublic) netip.Addr {
 }
 
 func newNetstack(logf logger.Logf, sys *tsd.System) (*netstack.Impl, error) {
-	return netstack.Create(logf, sys.Tun.Get(), sys.Engine.Get(), sys.MagicSock.Get(), sys.Dialer.Get(), sys.DNSManager.Get())
+	return netstack.Create(logf,
+		sys.Tun.Get(),
+		sys.Engine.Get(),
+		sys.MagicSock.Get(),
+		sys.Dialer.Get(),
+		sys.DNSManager.Get(),
+		sys.ProxyMapper(),
+	)
 }
 
 // createEngine tries to the wgengine.Engine based on the order of tunnels
@@ -491,6 +499,7 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 		return nil, true // don't accept any incoming connections to client
 	}
 	lb.ns = ns
+	sys.Set(ns)
 
 	e := sys.Engine.Get()
 	e.SetFilter(filter.NewAllowAllForTest(logf)) // TODO: trashy
