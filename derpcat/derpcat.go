@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/fxamacker/cbor/v2"
 	go4mem "go4.org/mem"
@@ -41,8 +42,21 @@ import (
 type ConnBlob string
 
 type ConnInfo struct {
-	ServerPubBytes [32]byte              `cbor:"p"` // a key.NodePublic
-	Region         []*tailcfg.DERPRegion `cbor:"r"`
+	ServerPubBytes [32]byte `cbor:"p"` // a key.NodePublic
+
+	// Region, if non-empty, lists the regions of a DERPMap.
+	// Either Region or RegionID must be set. If Region is set
+	// the client can avoid doing a lookup to discover the DERP map
+	// but the ConnBlob is longer.
+	//
+	// As of 2023-09-22, a maximum of 1 region may be provided.
+	Region []*tailcfg.DERPRegion `cbor:"r,omitempty"`
+
+	// RegionID lists the number of one of Tailscale's provided
+	// DERP servers. If set, Region may be omitted and the ConnBlob
+	// is shorter, at the cost of the client needing to fetch
+	// the derpmap from tailscale.com once at startup.
+	RegionID int `cbor:"i,omitempty"`
 }
 
 func (ci ConnInfo) ServerPublic() key.NodePublic {
@@ -215,15 +229,18 @@ func (lb *locoBackend) ConnBlob() ConnBlob {
 	if debugConnBlob {
 		log.Printf("ConnBlob: %v", logger.AsJSON(ci))
 	}
+	return ci.ConnBlob()
+}
 
-	x, err := cbor.Marshal(&ci)
+func (ci *ConnInfo) ConnBlob() ConnBlob {
+	x, err := cbor.Marshal(ci)
 	if err != nil {
 		panic(err)
 	}
 	if debugConnBlob {
 		log.Printf("ConnBlob: %q", x)
 	}
-	return "derpcat_" + ConnBlob(base64.URLEncoding.EncodeToString(x))
+	return "derpcat_" + ConnBlob(base64.RawURLEncoding.EncodeToString(x))
 }
 
 func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
@@ -232,13 +249,29 @@ func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 	if !ok {
 		return zero, errors.New("server doesn't start with \"derpcat_\"")
 	}
-	x, err := base64.URLEncoding.DecodeString(rest)
+	x, err := base64.RawURLEncoding.DecodeString(rest)
 	if err != nil {
 		return zero, fmt.Errorf("base64 decode: %w", err)
 	}
 	var ci ConnInfo
 	if err := cbor.Unmarshal(x, &ci); err != nil {
 		return zero, fmt.Errorf("CBOR unmarshal: %v", err)
+	}
+	for ri, r := range ci.Region {
+		if r.RegionID == 0 {
+			r.RegionID = ri + 1
+		}
+		if r.RegionCode == "" {
+			r.RegionCode = fmt.Sprint(r.RegionID)
+		}
+		for _, n := range r.Nodes {
+			if n.HostName == "" && n.Name != "" && unicode.IsNumber(rune(n.Name[0])) {
+				n.HostName = "derp" + n.Name + ".tailscale.com"
+			}
+			if n.RegionID == 0 {
+				n.RegionID = r.RegionID
+			}
+		}
 	}
 	return ci, nil
 }
