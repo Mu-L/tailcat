@@ -34,8 +34,9 @@ import (
 )
 
 var (
-	flagPorts   = flag.String("ports", "", "ports to serve. comma-separated list of port numbers, or \"all\". If empty, in server mode only port 0 listens, which then writes to stdout.")
-	flagVerbose = flag.Bool("verbose", false, "be verbose")
+	flagPorts        = flag.String("ports", "", "ports to serve. comma-separated list of port numbers, or \"all\". If empty, in server mode only port 0 listens, which then writes to stdout.")
+	flagVerbose      = flag.Bool("verbose", false, "be verbose")
+	flagEmbedDERPMap = flag.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
 )
 
 func usage(err string) {
@@ -131,7 +132,7 @@ func main() {
 		}
 		pi, err := cl.Ping(context.Background())
 		if err != nil {
-			log.Fatalf("Ping: %v", err)
+			log.Fatalf("derpcat.Ping: %v", err)
 		}
 		logf("got ping: %+v", pi)
 
@@ -191,7 +192,7 @@ func clientSOCKSMode(logf logger.Logf) {
 	}
 	pi, err := cl.Ping(context.Background())
 	if err != nil {
-		log.Fatalf("Ping: %v", err)
+		log.Fatalf("derpcat.Ping: %v", err)
 	}
 	logf("got ping: %+v", pi)
 
@@ -331,14 +332,15 @@ func server(logf logger.Logf) {
 	if err := s.Start(); err != nil {
 		log.Fatalf("Server.Start: %v", err)
 	}
-	fmt.Fprintf(os.Stderr, "Server derpaddr: %v\n", s.ConnBlob())
+	connStr := s.ConnBlob(*flagEmbedDERPMap)
+	fmt.Fprintf(os.Stderr, "Server derpaddr: %v\n", connStr)
 	if v := os.Getenv("DC_ADDR_FILE"); v != "" {
-		if err := os.WriteFile(v, []byte(s.ConnBlob()), 0600); err != nil {
+		if err := os.WriteFile(v, []byte(connStr), 0600); err != nil {
 			log.Fatal(err)
 		}
 	}
 
-	if *flagVerbose {
+	if os.Getenv("DERPCAT_STATUS_LOOP") == "1" {
 		go func() {
 			for {
 				log.Printf("status = %v", logger.AsJSON(s.Status()))

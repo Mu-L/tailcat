@@ -41,7 +41,7 @@ func TestDERPCat(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	t.Logf("server: %v", s.ConnBlob())
+	t.Logf("server: %v", s.ConnBlob(true))
 
 	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
 		if port != 80 {
@@ -66,7 +66,7 @@ func TestDERPCat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c, err := NewClient(mkLogger(t, "client"), s.ConnBlob())
+	c, err := NewClient(mkLogger(t, "client"), s.ConnBlob(true))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

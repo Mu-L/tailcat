@@ -3,6 +3,7 @@ package derpcat
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -181,8 +182,8 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 func (s *Server) Start() error { return s.lb.Start() }
 func (s *Server) Close() error { return s.lb.Close() }
 
-func (s *Server) ConnBlob() ConnBlob {
-	return s.lb.ConnBlob()
+func (s *Server) ConnBlob(embedDERPMap bool) ConnBlob {
+	return s.lb.ConnBlob(embedDERPMap)
 }
 
 func newLocoBackend(priv key.NodePrivate) *locoBackend {
@@ -222,16 +223,20 @@ func PickRegion() (*tailcfg.DERPRegion, error) {
 
 var debugConnBlob = envknob.Bool("TS_DEBUG_CONNBLOB")
 
-func (lb *locoBackend) ConnBlob() ConnBlob {
+func (lb *locoBackend) ConnBlob(embedDERPMap bool) ConnBlob {
 	if lb.dm == nil {
 		panic("no DERPMap set")
 	}
 	var ci ConnInfo
 	ci.ServerPubBytes = lb.pub.Raw32()
 	for _, r := range lb.dm.Regions {
-		ci.Region = append(ci.Region, r)
+		if embedDERPMap {
+			ci.Region = append(ci.Region, r)
+		} else {
+			ci.RegionID = r.RegionID
+		}
 	}
-	if len(ci.Region) == 0 {
+	if len(lb.dm.Regions) == 0 {
 		panic("no regions in derpmap")
 	}
 
@@ -305,6 +310,38 @@ func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 		}
 	}
 	return ci, nil
+}
+
+func (ci *ConnInfo) Expand(ctx context.Context) error {
+	if len(ci.Region) > 0 || ci.RegionID == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://login.tailscale.com/derpmap/default", nil)
+	if err != nil {
+		return fmt.Errorf("fetching DERPMap for region %v: %w", ci.RegionID, err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching DERPMap for region %v: %w", ci.RegionID, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return fmt.Errorf("fetching DERPMap for region %v: %v", ci.RegionID, res.Status)
+	}
+	var dm tailcfg.DERPMap
+	if err := json.NewDecoder(res.Body).Decode(&dm); err != nil {
+		return fmt.Errorf("fetching DERPMap for region %v, invalid JSON from %v: %w", ci.RegionID, req.URL, err)
+	}
+	r, ok := dm.Regions[ci.RegionID]
+	if !ok {
+		return fmt.Errorf("connection string said only DERP RegionID %v but no such region in %v", ci.RegionID, req.URL)
+	}
+	ci.Region = append(ci.Region, r)
+	log.Printf("Got region: %v", r)
+	return nil
 }
 
 func (lb *locoBackend) Start() error {
@@ -536,6 +573,10 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 		return nil, err
 	}
 
+	if err := ci.Expand(context.TODO()); err != nil {
+		return nil, err
+	}
+
 	priv := key.NewNode()
 	lb := newLocoBackend(priv)
 	lb.logf = logf
@@ -543,6 +584,9 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	lb.serverPub = ci.ServerPublic()
 	for _, r := range ci.Region {
 		mak.Set(&lb.dm.Regions, r.RegionID, r)
+	}
+	if len(ci.Region) == 0 {
+		return nil, fmt.Errorf("no DERP regions in ConnBlob")
 	}
 
 	sys := &lb.sys
