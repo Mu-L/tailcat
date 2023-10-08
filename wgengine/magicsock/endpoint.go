@@ -984,10 +984,13 @@ func (de *endpoint) send(buffs [][]byte) error {
 		var txBytes int
 		for _, buff := range buffs {
 			const isDisco = false
-			ok, _ := de.c.sendAddr(derpAddr, de.publicKey, buff, isDisco)
+			ok, err2 := de.c.sendAddr(derpAddr, de.publicKey, buff, isDisco)
 			txBytes += len(buff)
 			if !ok {
 				allOk = false
+			}
+			if err2 != nil {
+				de.c.logf("magicsock: end to derp error to %v: %v", derpAddr, err2)
 			}
 		}
 
@@ -997,6 +1000,7 @@ func (de *endpoint) send(buffs [][]byte) error {
 		if allOk {
 			return nil
 		}
+		panic(fmt.Sprintf("boom sending to %v", derpAddr))
 	}
 	return err
 }
