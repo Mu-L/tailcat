@@ -45,7 +45,7 @@ import (
 type ConnBlob string
 
 type ConnInfo struct {
-	ServerPubBytes [32]byte `cbor:"p"` // a key.NodePublic
+	ServerPublic NodePublic `cbor:"p"` // a key.NodePublic
 
 	// Region, if non-empty, lists the regions of a DERPMap.
 	// Either Region or RegionID must be set. If Region is set
@@ -62,9 +62,23 @@ type ConnInfo struct {
 	RegionID int `cbor:"i,omitempty" json:",omitempty"`
 }
 
-func (ci ConnInfo) ServerPublic() key.NodePublic {
-	raw := go4mem.B(ci.ServerPubBytes[:])
-	return key.NodePublicFromRaw32(raw)
+// NodePublic is a wrapper around key.NodePublic just so we can have a slightly
+// smaller CBOR representation without the "np" prefix.
+type NodePublic struct {
+	key.NodePublic
+}
+
+func (p NodePublic) MarshalBinary() ([]byte, error) {
+	return p.NodePublic.AppendTo(nil), nil
+}
+
+func (p *NodePublic) UnmarshalBinary(x []byte) error {
+	p.NodePublic = key.NodePublicFromRaw32(go4mem.B(x))
+	return nil
+}
+
+func (a NodePublic) Equal(b NodePublic) bool {
+	return a == b
 }
 
 // locoBackend is like tailscaled's LocalBackend, but crazier.
@@ -262,7 +276,7 @@ func (lb *locoBackend) ConnBlob(embedDERPMap bool) ConnBlob {
 		panic("no DERPMap set")
 	}
 	var ci ConnInfo
-	ci.ServerPubBytes = lb.pub.Raw32()
+	ci.ServerPublic = NodePublic{lb.pub}
 	for _, r := range lb.dm.Regions {
 		if embedDERPMap {
 			ci.Region = append(ci.Region, r)
@@ -309,6 +323,7 @@ func (ci *ConnInfo) ConnBlob() ConnBlob {
 	}
 	if debugConnBlob {
 		log.Printf("ConnBlob: %q", x)
+		log.Printf("ConnBlob: %x", x)
 	}
 	return "derpcat-" + ConnBlob(base64.RawURLEncoding.EncodeToString(x))
 }
@@ -622,7 +637,7 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	lb := newLocoBackend(priv)
 	lb.logf = logf
 	lb.dm = &tailcfg.DERPMap{}
-	lb.serverPub = ci.ServerPublic()
+	lb.serverPub = ci.ServerPublic.NodePublic
 	for _, r := range ci.Region {
 		mak.Set(&lb.dm.Regions, r.RegionID, r)
 	}
@@ -672,7 +687,7 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 	return &Client{
 		ci:         ci,
 		lb:         lb,
-		serverAddr: dcAddrForKey(ci.ServerPublic()),
+		serverAddr: dcAddrForKey(ci.ServerPublic.NodePublic),
 	}, nil
 }
 
@@ -700,7 +715,7 @@ func (c *Client) Ping(ctx context.Context) (PingResult, error) {
 
 	resc := make(chan *ipnstate.PingResult, 1)
 	res := &ipnstate.PingResult{}
-	mc.DerpCatPing(c.ci.ServerPublic(), res, func(pr *ipnstate.PingResult) {
+	mc.DerpCatPing(c.ci.ServerPublic.NodePublic, res, func(pr *ipnstate.PingResult) {
 		resc <- pr
 	})
 	select {

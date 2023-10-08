@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"go4.org/mem"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest"
 	"tailscale.com/tstest/integration"
@@ -112,6 +113,9 @@ func TestDERPCat(t *testing.T) {
 }
 
 func TestConnBlob(t *testing.T) {
+	akey := func(a [32]byte) NodePublic {
+		return NodePublic{key.NodePublicFromRaw32(mem.B(a[:]))}
+	}
 	tests := []struct {
 		name string
 		ci   ConnInfo
@@ -121,14 +125,14 @@ func TestConnBlob(t *testing.T) {
 		{
 			name: "just_key",
 			ci: ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
 			},
 			want: "derpcat-oWFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHw",
 		},
 		{
 			name: "key_with_full_custom_region", // worst case (longest length)
 			ci: ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
 				Region: []*tailcfg.DERPRegion{
 					{
 						Nodes: []*tailcfg.DERPNode{
@@ -148,7 +152,7 @@ func TestConnBlob(t *testing.T) {
 			},
 			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6Co2FuYjFhYmhudm15LWRlcnAuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDCjYW5iMWJiaG53bXktZGVycDIuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDA",
 			back: &ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
 				Region: []*tailcfg.DERPRegion{
 					{
 						RegionID:   1,
@@ -175,7 +179,7 @@ func TestConnBlob(t *testing.T) {
 		{
 			name: "ts_region",
 			ci: ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
 				Region: []*tailcfg.DERPRegion{
 					{
 						Nodes: []*tailcfg.DERPNode{
@@ -191,7 +195,7 @@ func TestConnBlob(t *testing.T) {
 			},
 			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhoWFuYjFi",
 			back: &ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
 				Region: []*tailcfg.DERPRegion{
 					{
 						RegionID:   1,
@@ -216,7 +220,7 @@ func TestConnBlob(t *testing.T) {
 		{
 			name: "remove_implicit_fields_on_marshal",
 			ci: ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
 				Region: []*tailcfg.DERPRegion{
 					{
 						RegionID: 123, // gets scrubbed, changed to 1
@@ -237,7 +241,7 @@ func TestConnBlob(t *testing.T) {
 			},
 			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhomFuYjFiYmhueCZkZXJwMWItbm9uLWRlZmF1bHQtdmFsdWUudGFpbHNjYWxlLmNvbQ",
 			back: &ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
 				Region: []*tailcfg.DERPRegion{
 					{
 						RegionID:   1,
@@ -262,8 +266,8 @@ func TestConnBlob(t *testing.T) {
 		{
 			name: "region_id",
 			ci: ConnInfo{
-				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
-				RegionID:       10,
+				ServerPublic: akey([32]byte{1: 1, 2: 2, 31: 31}),
+				RegionID:     10,
 			},
 			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FpCg",
 		},
