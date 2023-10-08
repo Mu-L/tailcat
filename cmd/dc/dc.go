@@ -113,7 +113,7 @@ func main() {
 		return
 	}
 
-	if (len(args) == 1 || len(args) == 2) && strings.HasPrefix(args[0], "derpcat_") {
+	if (len(args) == 1 || len(args) == 2) && strings.HasPrefix(args[0], "derpcat-") {
 		var port uint16 // default 0
 		if len(args) == 2 {
 			portStr := args[1]
