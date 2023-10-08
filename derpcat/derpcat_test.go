@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -44,11 +45,19 @@ func TestDERPCat(t *testing.T) {
 	t.Logf("server: %v", s.ConnBlob(true))
 
 	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
+		t.Logf("test: OnTCP(port %v) ...", port)
 		if port != 80 {
 			return nil
 		}
 		return func(c net.Conn) {
 			io.WriteString(c, "Hello from port 80\n")
+			c.Close()
+		}
+	}
+	s.OnTCPForward = func(dst netip.AddrPort) (handler func(net.Conn)) {
+		t.Logf("test: OnTCPForward(%v) ...", dst)
+		return func(c net.Conn) {
+			io.WriteString(c, "Hello from relay\n")
 			c.Close()
 		}
 	}
@@ -93,6 +102,13 @@ func TestDERPCat(t *testing.T) {
 	}
 	all, err := io.ReadAll(conn)
 	t.Logf("Got: %q, %v", all, err)
+
+	// And dialing arbitrary IPs...
+	conn, err = c.DialTCP(ctx, netip.MustParseAddrPort("192.0.2.1:123"))
+	if err != nil {
+		t.Fatalf("DialTCP = %v, %v", conn, err)
+	}
+
 }
 
 func TestConnBlob(t *testing.T) {

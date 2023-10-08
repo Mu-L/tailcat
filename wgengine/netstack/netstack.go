@@ -798,7 +798,7 @@ func (ns *Impl) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper, gro *gro.
 	return filter.DropSilently, gro
 }
 
-func (ns *Impl) DialContextTCP(ctx context.Context, ipp netip.AddrPort) (*gonet.TCPConn, error) {
+func (ns *Impl) DialContextTCP(ctx context.Context, ipp netip.AddrPort) (net.Conn, error) {
 	remoteAddress := tcpip.FullAddress{
 		NIC:  nicID,
 		Addr: tcpip.AddrFromSlice(ipp.Addr().AsSlice()),

@@ -18,7 +18,10 @@
 package tsd
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"reflect"
 
 	"tailscale.com/control/controlknobs"
@@ -75,6 +78,7 @@ type System struct {
 // references LocalBackend, and LocalBackend has a tsd.System.
 type NetstackImpl interface {
 	UpdateNetstackIPs(*netmap.NetworkMap)
+	DialContextTCP(ctx context.Context, ipp netip.AddrPort) (net.Conn, error)
 }
 
 // Set is a convenience method to set a subsystem value.

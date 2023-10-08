@@ -119,10 +119,20 @@ type Server struct {
 	// then a RST is sent.
 	//
 	// This only applies to connections directly to the server node and not
-	// when being a subnet router.
+	// when being a subnet router. See OnTCPForward for relayed connections.
 	//
-	// Must be set before calling Start.
+	// It must be set before calling Start.
 	OnTCP func(port uint16) (handler func(net.Conn))
+
+	// OnTCPForward, if non-nil, specifies a func that returns a handler to handle
+	// incoming connections to the provided IP:port. If nil or if it returns nil,
+	// then a RST is sent.
+	//
+	// This only applies to connections relayed through the server and not to the server
+	// itself. See OnTCP for direct connections to the server.
+	//
+	// It must be set before calling Start.
+	OnTCPForward func(netip.AddrPort) (handler func(net.Conn))
 }
 
 func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegion) (*Server, error) {
@@ -168,10 +178,23 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
 	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
-		if srv.OnTCP == nil {
+		logf("GetTCPHandlerForFlow(%v, %v) ...", src, dst)
+		if dst.Addr() == srv.Addr() {
+			if srv.OnTCP == nil {
+				return nil, true // send RST
+			}
+			return srv.OnTCP(dst.Port()), true
+		}
+		if srv.OnTCPForward == nil {
 			return nil, true // send RST
 		}
-		return srv.OnTCP(dst.Port()), true
+		if nat64Prefix.Contains(dst.Addr()) {
+			var a4 [4]byte
+			d6 := dst.Addr().As16()
+			copy(a4[:], d6[12:16])
+			dst = netip.AddrPortFrom(netip.AddrFrom4(a4), dst.Port())
+		}
+		return srv.OnTCPForward(dst), true
 	}
 	lb.ns = ns
 	sys.Set(ns)
@@ -189,8 +212,9 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 	return srv, nil
 }
 
-func (s *Server) Start() error { return s.lb.Start() }
-func (s *Server) Close() error { return s.lb.Close() }
+func (s *Server) Addr() netip.Addr { return s.lb.addr }
+func (s *Server) Start() error     { return s.lb.Start() }
+func (s *Server) Close() error     { return s.lb.Close() }
 
 func (s *Server) ConnBlob(embedDERPMap bool) ConnBlob {
 	return s.lb.ConnBlob(embedDERPMap)
@@ -353,6 +377,8 @@ func (ci *ConnInfo) Expand(ctx context.Context) error {
 	return nil
 }
 
+var allIPv6 = netip.MustParsePrefix("::/0")
+
 func (lb *locoBackend) Start() error {
 	if err := lb.ns.Start(nil /* no LocalBackend */); err != nil {
 		return fmt.Errorf("failed to start netstack: %w", err)
@@ -385,7 +411,7 @@ func (lb *locoBackend) Start() error {
 			Key:        lb.pub,
 			DiscoKey:   discoPriv.Public(),
 			Addresses:  []netip.Prefix{lb.addrPrefix},
-			AllowedIPs: []netip.Prefix{lb.addrPrefix},
+			AllowedIPs: []netip.Prefix{lb.addrPrefix, allIPv6},
 			DERP:       derpStr,
 		}).View()
 	} else {
@@ -411,7 +437,7 @@ func (lb *locoBackend) Start() error {
 			Key:        lb.serverPub,
 			DiscoKey:   lb.serverPub.AsDiscoPublic(),
 			Addresses:  []netip.Prefix{serverAddrPrefix},
-			AllowedIPs: []netip.Prefix{serverAddrPrefix},
+			AllowedIPs: []netip.Prefix{serverAddrPrefix, allIPv6},
 			DERP:       derpStr,
 		}).View())
 	}
@@ -431,7 +457,10 @@ func (lb *locoBackend) Start() error {
 		MTU:        1280,
 		Peers:      []wgcfg.Peer{}, // TODO: add peers dynamically as they disco to us
 	}
-	if !lb.serverPub.IsZero() {
+	if lb.serverPub.IsZero() {
+		// We're the server.
+		wgConf.Addresses = append(wgConf.Addresses, allIPv6)
+	} else {
 		// We're the client. Add our server as a peer.
 		wgConf.Peers = append(wgConf.Peers, wgcfg.Peer{
 			PublicKey:  lb.serverPub,
@@ -481,7 +510,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 			Key:        b.pub,
 			DiscoKey:   b.priv.AsDiscoPrivate().Public(), // TODO: cache
 			Addresses:  []netip.Prefix{b.addrPrefix},
-			AllowedIPs: []netip.Prefix{b.addrPrefix},
+			AllowedIPs: []netip.Prefix{b.addrPrefix, allIPv6},
 			DERP:       derpStr,
 		}).View(),
 	}
@@ -500,7 +529,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 	wgConf := &wgcfg.Config{
 		Name:       "self",
 		PrivateKey: b.priv,
-		Addresses:  []netip.Prefix{b.addrPrefix},
+		Addresses:  []netip.Prefix{b.addrPrefix, allIPv6},
 		MTU:        1280,
 		Peers:      []wgcfg.Peer{}, // TODO: add peers dynamically as they disco to us
 	}
@@ -696,6 +725,22 @@ func (c *Client) Dial(ctx context.Context, network, addr string) (net.Conn, erro
 
 func (c *Client) DialTCPPort(ctx context.Context, port uint16) (net.Conn, error) {
 	return c.lb.sys.Dialer.Get().UserDial(ctx, "tcp", net.JoinHostPort(c.serverAddr.String(), fmt.Sprint(port)))
+}
+
+var (
+	nat64Prefix      = netip.MustParsePrefix("64:ff9b::/96")
+	nat64PrefixBytes = nat64Prefix.Addr().As16()
+)
+
+func (c *Client) DialTCP(ctx context.Context, ap netip.AddrPort) (net.Conn, error) {
+	if ap.Addr().Is4() {
+		a := nat64PrefixBytes
+		a4 := ap.Addr().As4()
+		copy(a[12:], a4[:])
+		ap = netip.AddrPortFrom(netip.AddrFrom16(a), ap.Port())
+	}
+	ns := c.lb.sys.Netstack.Get()
+	return ns.DialContextTCP(ctx, ap)
 }
 
 func pfxOf(a netip.Addr) netip.Prefix {
