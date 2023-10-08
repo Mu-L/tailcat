@@ -87,6 +87,16 @@ type locoBackend struct {
 	nm      *netmap.NetworkMap
 }
 
+func (b *locoBackend) derpRegionID() int {
+	if b.dm == nil {
+		panic("no derp map")
+	}
+	for _, r := range b.dm.Regions {
+		return r.RegionID
+	}
+	panic("no derp regions in derp map")
+}
+
 func (b *locoBackend) Close() error {
 	if e, ok := b.sys.Engine.GetOK(); ok {
 		e.Close()
@@ -257,7 +267,7 @@ func (ci *ConnInfo) ConnBlob() ConnBlob {
 		r2 := r.Clone()
 		mut.Region[i] = r2
 
-		// Remove some fields vbefore
+		// Remove some fields before encoding.
 		r2.RegionID = 0
 		r2.RegionCode = ""
 		for _, n := range r2.Nodes {
@@ -340,7 +350,6 @@ func (ci *ConnInfo) Expand(ctx context.Context) error {
 		return fmt.Errorf("connection string said only DERP RegionID %v but no such region in %v", ci.RegionID, req.URL)
 	}
 	ci.Region = append(ci.Region, r)
-	log.Printf("Got region: %v", r)
 	return nil
 }
 
@@ -355,6 +364,8 @@ func (lb *locoBackend) Start() error {
 
 	mc.SetPrivateKey(lb.priv)
 	mc.SetDERPMap(lb.dm)
+
+	derpStr := fmt.Sprintf("127.3.3.40:%d", lb.derpRegionID())
 
 	nm := &netmap.NetworkMap{
 		PrivateKey: lb.priv,
@@ -375,7 +386,7 @@ func (lb *locoBackend) Start() error {
 			DiscoKey:   discoPriv.Public(),
 			Addresses:  []netip.Prefix{lb.addrPrefix},
 			AllowedIPs: []netip.Prefix{lb.addrPrefix},
-			DERP:       "127.3.3.40:1",
+			DERP:       derpStr,
 		}).View()
 	} else {
 		// We're the client.
@@ -390,7 +401,7 @@ func (lb *locoBackend) Start() error {
 			Key:       lb.pub,
 			DiscoKey:  mc.DiscoPublicKey(),
 			Addresses: []netip.Prefix{lb.addrPrefix},
-			DERP:      "127.3.3.40:1",
+			DERP:      derpStr,
 		}).View()
 		nm.Peers = append(nm.Peers, (&tailcfg.Node{
 			ID:         1,
@@ -401,7 +412,7 @@ func (lb *locoBackend) Start() error {
 			DiscoKey:   lb.serverPub.AsDiscoPublic(),
 			Addresses:  []netip.Prefix{serverAddrPrefix},
 			AllowedIPs: []netip.Prefix{serverAddrPrefix},
-			DERP:       "127.3.3.40:1",
+			DERP:       derpStr,
 		}).View())
 	}
 	lb.mu.Lock()
@@ -446,6 +457,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 		return
 	}
 	id := len(b.clients) + 2 // server id ID 1, clients are IDs 2, 3, ...
+	derpStr := fmt.Sprintf("127.3.3.40:%d", b.derpRegionID())
 	mak.Set(&b.clients, src, &tailcfg.Node{
 		ID:         tailcfg.NodeID(id),
 		StableID:   tailcfg.StableNodeID(fmt.Sprint(id)),
@@ -455,7 +467,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 		DiscoKey:   discoPub,
 		Addresses:  []netip.Prefix{pfxOf(dcAddrForKey(src))},
 		AllowedIPs: []netip.Prefix{pfxOf(dcAddrForKey(src))},
-		DERP:       "127.3.3.40:1",
+		DERP:       derpStr,
 	})
 
 	nm := &netmap.NetworkMap{
@@ -470,7 +482,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 			DiscoKey:   b.priv.AsDiscoPrivate().Public(), // TODO: cache
 			Addresses:  []netip.Prefix{b.addrPrefix},
 			AllowedIPs: []netip.Prefix{b.addrPrefix},
-			DERP:       "127.3.3.40:1",
+			DERP:       derpStr,
 		}).View(),
 	}
 	for _, n := range b.clients {
@@ -649,7 +661,7 @@ func (c *Client) Start() error {
 }
 
 func (c *Client) Ping(ctx context.Context) (PingResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	var zero PingResult

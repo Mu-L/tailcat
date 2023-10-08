@@ -505,17 +505,21 @@ func (de *endpoint) send(buffs [][]byte) error {
 	if derpAddr.IsValid() {
 		allOk := true
 		for _, buff := range buffs {
-			ok, _ := de.c.sendAddr(derpAddr, de.publicKey, buff)
+			ok, err2 := de.c.sendAddr(derpAddr, de.publicKey, buff)
 			if stats := de.c.stats.Load(); stats != nil {
 				stats.UpdateTxPhysical(de.nodeAddr, derpAddr, len(buff))
 			}
 			if !ok {
 				allOk = false
 			}
+			if err2 != nil {
+				de.c.logf("magicsock: end to derp error to %v: %v", derpAddr, err2)
+			}
 		}
 		if allOk {
 			return nil
 		}
+		panic(fmt.Sprintf("boom sending to %v", derpAddr))
 	}
 	return err
 }

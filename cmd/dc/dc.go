@@ -134,7 +134,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("derpcat.Ping: %v", err)
 		}
-		logf("got ping: %+v", pi)
+		if *flagVerbose {
+			logf("got ping: %+v", pi)
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

@@ -1022,7 +1022,7 @@ func (c *Conn) networkDown() bool { return !c.networkUp.Load() }
 // Send implements conn.Bind.
 //
 // See https://pkg.go.dev/golang.zx2c4.com/wireguard/conn#Bind.Send
-func (c *Conn) Send(buffs [][]byte, ep conn.Endpoint) error {
+func (c *Conn) Send(buffs [][]byte, ep conn.Endpoint) (ret error) {
 	n := int64(len(buffs))
 	metricSendData.Add(n)
 	if c.networkDown() {
@@ -1288,8 +1288,20 @@ const (
 // speeds.
 var debugIPv4DiscoPingPenalty = envknob.RegisterDuration("TS_DISCO_PONG_IPV4_DELAY")
 
+func (c *Conn) derpCatRegion() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.derpMap == nil {
+		panic("no derp map")
+	}
+	for _, r := range c.derpMap.Regions {
+		return r.RegionID
+	}
+	panic("no regions")
+}
+
 func (c *Conn) SendDerpCatDisco(dstKey key.NodePublic, m disco.Message) (sent bool, err error) {
-	dstAddr := netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, 1)
+	dstAddr := netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, uint16(c.derpCatRegion()))
 
 	pubBytes := dstKey.AppendTo(nil)
 	dstDisco := key.DiscoPublicFromRaw32(mem.B(pubBytes)) // TODO(bradfitz): this is sketch, mixing keys
@@ -1590,7 +1602,7 @@ func (c *Conn) handlePingMeowLocked(dm *disco.Ping, src netip.AddrPort, di *disc
 		c.onMeow(derpNodeSrc, di.discoKey)
 
 		// Tell the client they may proceed.
-		dstAddr := netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, 1)
+		dstAddr := netip.AddrPortFrom(tailcfg.DerpMagicIPAddr, uint16(c.derpCatRegion()))
 		c.sendDiscoMessage(dstAddr, derpNodeSrc, di.discoKey, &disco.Meowed{}, discoVerboseLog)
 	}()
 }
