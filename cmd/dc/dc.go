@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
@@ -35,6 +36,7 @@ import (
 
 var (
 	flagPorts        = flag.String("ports", "", "ports to serve. comma-separated list of port numbers, or \"all\". If empty, in server mode only port 0 listens, which then writes to stdout.")
+	flagBeExitNode   = flag.Bool("be-exit-node", false, "be an exit node (for all IPv4 & IPv6, including private ranges)")
 	flagVerbose      = flag.Bool("verbose", false, "be verbose")
 	flagEmbedDERPMap = flag.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
 )
@@ -88,14 +90,14 @@ func main() {
 	flag.Usage = func() { usage("") }
 	flag.Parse()
 	args := flag.Args()
-	if len(args) > 0 && *flagPorts != "" {
-		usage("No positional arguments are valid along with --ports")
+	serverMode := len(args) == 0 || *flagBeExitNode || *flagPorts != ""
+	if len(args) > 0 && serverMode {
+		usage("No positional arguments are valid along with --ports or --be-exit-node")
 	}
 	var logf logger.Logf = logger.Discard
 	if *flagVerbose {
 		logf = log.Printf
 	}
-	serverMode := len(args) == 0
 	if serverMode {
 		server(logf)
 		return
@@ -114,71 +116,90 @@ func main() {
 	}
 
 	if (len(args) == 1 || len(args) == 2) && strings.HasPrefix(args[0], "derpcat-") {
-		var port uint16 // default 0
+		var dst string
 		if len(args) == 2 {
-			portStr := args[1]
-			port64, err := strconv.ParseUint(portStr, 10, 16)
-			if err != nil {
-				usage(fmt.Sprintf("invalid port number %q", portStr))
-			}
-			port = uint16(port64)
+			dst = args[1]
 		}
-		cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(args[0]))
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := cl.Start(); err != nil {
-			log.Fatal(err)
-		}
-		pi, err := cl.Ping(context.Background())
-		if err != nil {
-			log.Fatalf("derpcat.Ping: %v", err)
-		}
-		if *flagVerbose {
-			logf("got ping: %+v", pi)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		c, err := cl.DialTCPPort(ctx, port)
-		if err != nil {
-			log.Fatal(err)
-		}
-		rxErr := make(chan error, 1)
-		txErr := make(chan error, 1)
-		go func() {
-			_, err := io.Copy(os.Stdout, c)
-			rxErr <- err
-		}()
-		go func() {
-			_, err := io.Copy(c, os.Stdin)
-			if err != nil {
-				log.Fatal(err)
-			}
-			if err := c.(*gonet.TCPConn).CloseWrite(); err != nil {
-				log.Fatal(err)
-			}
-			// TODO(bradfitz): figure out more why this trashy sleep is required. It
-			// seems that without it, our CloseWrite above never makes it out onto
-			// the network (no OS kernel to deal with it async after we os.Exit!).
-			// So we need to give it some time to send via DERP, etc. But where
-			// exactly is the buffering happening? The magicsock derp conn send,
-			// almost certainly. Maybe we can ask magicsock for its tx count before
-			// the CloseWrite and then wait for it to change, and then exit?
-			// But even then, do we want an ACK for our RST? Can we ask gvisor for
-			// that? Poll the gonet.TCPConn status or something?
-			time.Sleep(500 * time.Millisecond)
-			txErr <- nil
-		}()
-
-		// TODO(bradfitz): probably more ehre
-		select {
-		case <-txErr:
-		case <-rxErr:
-		}
+		clientMode(logf, args[0], dst)
 		return
 	}
 	panic("TODO")
+}
+
+func clientMode(logf logger.Logf, connStr, optDest string) {
+	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(connStr))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var dial func(context.Context) (net.Conn, error)
+	switch {
+	case optDest == "":
+		dial = func(ctx context.Context) (net.Conn, error) { return cl.DialTCPPort(ctx, 0) }
+	case !strings.Contains(optDest, ":"):
+		port, err := strconv.ParseUint(optDest, 10, 16)
+		if err != nil {
+			usage(fmt.Sprintf("invalid port number %q", optDest))
+		}
+		dial = func(ctx context.Context) (net.Conn, error) { return cl.DialTCPPort(ctx, uint16(port)) }
+	default:
+		addrPort, err := netip.ParseAddrPort(optDest)
+		if err != nil {
+			usage(fmt.Sprintf("invalid IP:port %q", optDest))
+		}
+		dial = func(ctx context.Context) (net.Conn, error) { return cl.DialTCP(ctx, addrPort) }
+	}
+
+	if err := cl.Start(); err != nil {
+		log.Fatal(err)
+	}
+	pi, err := cl.Ping(context.Background())
+	if err != nil {
+		log.Fatalf("derpcat.Ping: %v", err)
+	}
+	if *flagVerbose {
+		logf("got ping: %+v", pi)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := dial(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rxErr := make(chan error, 1)
+	txErr := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(os.Stdout, c)
+		rxErr <- err
+	}()
+	go func() {
+		_, err := io.Copy(c, os.Stdin)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := c.(*gonet.TCPConn).CloseWrite(); err != nil {
+			log.Fatal(err)
+		}
+		// TODO(bradfitz): figure out more why this trashy sleep is required. It
+		// seems that without it, our CloseWrite above never makes it out onto
+		// the network (no OS kernel to deal with it async after we os.Exit!).
+		// So we need to give it some time to send via DERP, etc. But where
+		// exactly is the buffering happening? The magicsock derp conn send,
+		// almost certainly. Maybe we can ask magicsock for its tx count before
+		// the CloseWrite and then wait for it to change, and then exit?
+		// But even then, do we want an ACK for our RST? Can we ask gvisor for
+		// that? Poll the gonet.TCPConn status or something?
+		time.Sleep(500 * time.Millisecond)
+		txErr <- nil
+	}()
+
+	// TODO(bradfitz): probably more here
+	select {
+	case <-txErr:
+	case <-rxErr:
+	}
+	return
 }
 
 func clientSOCKSMode(logf logger.Logf) {
@@ -247,7 +268,14 @@ func clientParseMode(logf logger.Logf) {
 
 func clientSSHMode(logf logger.Logf) {
 	args := flag.Args()
-	dst := args[1] // either a derpaddr alone or "user@<derpaddr>"
+	args = args[1:] // trim off "ssh"
+
+	portOrIPPort := "22"
+	if len(args) >= 2 && args[0] == "-p" {
+		portOrIPPort = args[1]
+		args = args[2:]
+	}
+	dst := args[0] // either a derpaddr alone or "user@<derpaddr>"
 
 	connBlobStr := dst
 	if strings.Contains(dst, "@") {
@@ -261,7 +289,7 @@ func clientSSHMode(logf logger.Logf) {
 		"/usr/bin/ssh",
 		"-o", "UpdateHostKeys no",
 		"-o", "StrictHostKeyChecking no",
-		"-o", fmt.Sprintf("ProxyCommand=%s %s 22", exe, connBlobStr),
+		"-o", fmt.Sprintf("ProxyCommand=%s %s %s", exe, connBlobStr, portOrIPPort),
 		dst,
 	}
 	err = syscall.Exec("/usr/bin/ssh", argv, os.Environ())
@@ -293,28 +321,12 @@ func server(logf logger.Logf) {
 		log.Fatalf("Tailscale SSH server not supported on %v", runtime.GOOS)
 	}
 
-	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
-		if port == 22 && services.Contains("tailscale-ssh") {
-			return s.HandleTailscaleSSHConn
-		}
-		if len(portSet) == 0 {
-			return func(c net.Conn) {
-				defer c.Close()
-				_, err := io.Copy(os.Stdout, c)
-				if err != nil {
-					log.Fatal(err)
-				}
-				os.Exit(0)
-			}
-		}
-		if !portSet.Contains(port) {
-			return nil // RST
-		}
+	tcpForwardTo := func(ipPortStr string) func(net.Conn) {
 		return func(c net.Conn) {
 			defer c.Close()
-			localConn, err := net.Dial("tcp", fmt.Sprintf("localhost:%v", port))
+			localConn, err := net.Dial("tcp", ipPortStr)
 			if err != nil {
-				logf("error proxying to localhost:%v: %v", port, err)
+				logf("error proxying to %v: %v", ipPortStr, err)
 				return
 			}
 			defer localConn.Close()
@@ -329,6 +341,37 @@ func server(logf logger.Logf) {
 			}()
 			<-errc
 		}
+	}
+
+	if *flagBeExitNode {
+		s.OnTCPForward = func(dst netip.AddrPort) (handler func(net.Conn)) {
+			return tcpForwardTo(dst.String())
+		}
+	}
+
+	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
+		if port == 22 && services.Contains("tailscale-ssh") {
+			return s.HandleTailscaleSSHConn
+		}
+		if *flagBeExitNode {
+			// Being an exit node includes localhost without needing
+			// to specify all the local port ranges.
+			return tcpForwardTo(fmt.Sprintf("localhost:%v", port))
+		}
+		if len(portSet) == 0 {
+			return func(c net.Conn) {
+				defer c.Close()
+				_, err := io.Copy(os.Stdout, c)
+				if err != nil {
+					log.Fatal(err)
+				}
+				os.Exit(0)
+			}
+		}
+		if !portSet.Contains(port) {
+			return nil // RST
+		}
+		return tcpForwardTo(fmt.Sprintf("localhost:%v", port))
 	}
 
 	if err := s.Start(); err != nil {

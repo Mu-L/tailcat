@@ -450,7 +450,7 @@ func (ns *Impl) handleLocalPackets(p *packet.Parsed, t *tstun.Wrapper) filter.Re
 	return filter.DropSilently
 }
 
-func (ns *Impl) DialContextTCP(ctx context.Context, ipp netip.AddrPort) (*gonet.TCPConn, error) {
+func (ns *Impl) DialContextTCP(ctx context.Context, ipp netip.AddrPort) (net.Conn, error) {
 	remoteAddress := tcpip.FullAddress{
 		NIC:  nicID,
 		Addr: tcpip.Address(ipp.Addr().AsSlice()),
