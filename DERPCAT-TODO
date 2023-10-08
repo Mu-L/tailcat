@@ -1,0 +1,9 @@
+- get server's real discokey on Meow reply, stop
+  setting it to pubkey one?
+- cache derpmap on disk, respect ConnInfo.RegionID
+- make rsync work. (make it built-in server-side with
+  gokrazy stuff?)
+- add a 'password' (shared secret) to conninfo that
+  is required in meow.
+- persistent named server keys. write pub/priv keypair
+  to disk. (with pub just being the connblob)

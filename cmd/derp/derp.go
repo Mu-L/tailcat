@@ -49,28 +49,28 @@ func usage(err string) {
 
 Server mode, accept one connection (any port), write to stdout:
 
-	dc
+	derp
 
 Server mode, given ports:
 
-	dc --ports=22,80,443,8000-8999
+	derp --ports=22,80,443,8000-8999
 
 Server mode, all ports:
 
-	dc --ports=all
+	derp --ports=all
 
 Server mode, certain ports and Tailscale SSH (auth without
 password or public key):
 
-	dc --ports=123,tssh
+	derp --ports=123,tssh
 
 Client mode, to default port 0 for stdin/stdout pipe:
 
-	echo hello | dc <derpaddr>
+	echo hello | derp <derpaddr>
 
 Client mode to an explicit pipe:
 
-	echo "GET / HTTP/1.1..." | dc <derpaddr> 80
+	echo "GET / HTTP/1.1..." | derp <derpaddr> 80
 
 Client mode, ssh:
 
