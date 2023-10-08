@@ -378,7 +378,7 @@ func server(logf logger.Logf) {
 		log.Fatalf("Server.Start: %v", err)
 	}
 	connStr := s.ConnBlob(*flagEmbedDERPMap)
-	fmt.Fprintf(os.Stderr, "Server derpaddr: %v\n", connStr)
+	fmt.Fprintf(os.Stderr, "# Server derpaddr: %v\n", connStr)
 	if v := os.Getenv("DC_ADDR_FILE"); v != "" {
 		if err := os.WriteFile(v, []byte(connStr), 0600); err != nil {
 			log.Fatal(err)
