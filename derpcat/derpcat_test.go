@@ -75,17 +75,6 @@ func TestDERPCat(t *testing.T) {
 	}
 	t.Cleanup(func() { c.Close() })
 
-	if false {
-		if err := tstest.WaitFor(5*time.Second, func() error {
-			if derper.IsClientConnectedForTest(c.PublicKey()) {
-				return nil
-			}
-			return errors.New("server not connected to derper")
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	t.Logf("Client is %v", c.PublicKey())
 
 	pi, err := c.Ping(context.Background())
