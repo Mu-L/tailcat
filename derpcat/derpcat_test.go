@@ -118,7 +118,7 @@ func TestConnBlob(t *testing.T) {
 			ci: ConnInfo{
 				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
 			},
-			want: "derpcat_oWFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHw",
+			want: "derpcat-oWFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHw",
 		},
 		{
 			name: "key_with_full_custom_region", // worst case (longest length)
@@ -141,7 +141,7 @@ func TestConnBlob(t *testing.T) {
 					},
 				},
 			},
-			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6Co2FuYjFhYmhudm15LWRlcnAuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDCjYW5iMWJiaG53bXktZGVycDIuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDA",
+			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6Co2FuYjFhYmhudm15LWRlcnAuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDCjYW5iMWJiaG53bXktZGVycDIuY3VzdG9tLmV4YW1wbGVhNG80MDAuNDAwLjQwMC40MDA",
 			back: &ConnInfo{
 				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
 				Region: []*tailcfg.DERPRegion{
@@ -184,7 +184,7 @@ func TestConnBlob(t *testing.T) {
 					},
 				},
 			},
-			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhoWFuYjFi",
+			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhoWFuYjFi",
 			back: &ConnInfo{
 				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
 				Region: []*tailcfg.DERPRegion{
@@ -230,7 +230,7 @@ func TestConnBlob(t *testing.T) {
 					},
 				},
 			},
-			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhomFuYjFiYmhueCZkZXJwMWItbm9uLWRlZmF1bHQtdmFsdWUudGFpbHNjYWxlLmNvbQ",
+			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FygaJiaWQAYW6CoWFuYjFhomFuYjFiYmhueCZkZXJwMWItbm9uLWRlZmF1bHQtdmFsdWUudGFpbHNjYWxlLmNvbQ",
 			back: &ConnInfo{
 				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
 				Region: []*tailcfg.DERPRegion{
@@ -260,7 +260,7 @@ func TestConnBlob(t *testing.T) {
 				ServerPubBytes: [32]byte{1: 1, 2: 2, 31: 31},
 				RegionID:       10,
 			},
-			want: "derpcat_omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FpCg",
+			want: "derpcat-omFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FpCg",
 		},
 	}
 	for _, tt := range tests {

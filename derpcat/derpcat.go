@@ -286,14 +286,14 @@ func (ci *ConnInfo) ConnBlob() ConnBlob {
 	if debugConnBlob {
 		log.Printf("ConnBlob: %q", x)
 	}
-	return "derpcat_" + ConnBlob(base64.RawURLEncoding.EncodeToString(x))
+	return "derpcat-" + ConnBlob(base64.RawURLEncoding.EncodeToString(x))
 }
 
 func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 	var zero ConnInfo
-	rest, ok := strings.CutPrefix(string(cb), "derpcat_")
+	rest, ok := strings.CutPrefix(string(cb), "derpcat-")
 	if !ok {
-		return zero, errors.New("server doesn't start with \"derpcat_\"")
+		return zero, errors.New("server doesn't start with \"derpcat-\"")
 	}
 	x, err := base64.RawURLEncoding.DecodeString(rest)
 	if err != nil {
