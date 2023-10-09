@@ -115,7 +115,7 @@ func main() {
 		return
 	}
 
-	if (len(args) == 1 || len(args) == 2) && strings.HasPrefix(args[0], "derpcat-") {
+	if (len(args) == 1 || len(args) == 2) && strings.HasPrefix(args[0], "dc") {
 		var dst string
 		if len(args) == 2 {
 			dst = args[1]
