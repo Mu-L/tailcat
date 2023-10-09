@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,8 +36,7 @@ import (
 )
 
 var (
-	flagPorts        = flag.String("ports", "", "ports to serve. comma-separated list of port numbers, or \"all\". If empty, in server mode only port 0 listens, which then writes to stdout.")
-	flagBeExitNode   = flag.Bool("be-exit-node", false, "be an exit node (for all IPv4 & IPv6, including private ranges)")
+	flagServe        = flag.String("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it listens only on port 0 and writes to stdout.")
 	flagVerbose      = flag.Bool("verbose", false, "be verbose")
 	flagEmbedDERPMap = flag.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
 )
@@ -53,16 +53,16 @@ Server mode, accept one connection (any port), write to stdout:
 
 Server mode, given ports:
 
-	derp --ports=22,80,443,8000-8999
+	derp --serve=22,80,443,8000-8999
 
 Server mode, all ports:
 
-	derp --ports=all
+	derp --serve=all
 
 Server mode, certain ports and Tailscale SSH (auth without
 password or public key):
 
-	derp --ports=123,tssh
+	derp --serve=80,no-auth-ssh
 
 Client mode, to default port 0 for stdin/stdout pipe:
 
@@ -75,6 +75,10 @@ Client mode to an explicit pipe:
 Client mode, ssh:
 
 	dc ssh <derpaddr>
+
+Client mode, ssh to specific IP:port via derpaddr's exit node:
+
+	dc ssh -p 10.0.0.1:22 <derpaddr>
 
 Client mode, run an ephemeral socks (socks5h) proxy and pass
 its address as 'all_proxy' environment variable to a child
@@ -90,9 +94,9 @@ func main() {
 	flag.Usage = func() { usage("") }
 	flag.Parse()
 	args := flag.Args()
-	serverMode := len(args) == 0 || *flagBeExitNode || *flagPorts != ""
+	serverMode := len(args) == 0 || *flagServe != ""
 	if len(args) > 0 && serverMode {
-		usage("No positional arguments are valid along with --ports or --be-exit-node")
+		usage("No positional arguments are valid along with --serve")
 	}
 	var logf logger.Logf = logger.Discard
 	if *flagVerbose {
@@ -297,9 +301,9 @@ func clientSSHMode(logf logger.Logf) {
 }
 
 func server(logf logger.Logf) {
-	portSet, services, err := parsePortSet(*flagPorts)
+	portSet, services, err := parsePortSet(*flagServe)
 	if err != nil {
-		log.Fatalf("invalid value in --ports: %v", err)
+		log.Fatalf("invalid value in --serve: %v", err)
 	}
 
 	var reg *tailcfg.DERPRegion
@@ -317,7 +321,7 @@ func server(logf logger.Logf) {
 	if err != nil {
 		log.Fatalf("NewServer: %v", err)
 	}
-	if services.Contains("tailscale-ssh") && !s.CanRunSSHServer() {
+	if services.Contains("no-auth-ssh") && !s.CanRunSSHServer() {
 		log.Fatalf("Tailscale SSH server not supported on %v", runtime.GOOS)
 	}
 
@@ -343,17 +347,17 @@ func server(logf logger.Logf) {
 		}
 	}
 
-	if *flagBeExitNode {
+	if services.Contains("exit-node") {
 		s.OnTCPForward = func(dst netip.AddrPort) (handler func(net.Conn)) {
 			return tcpForwardTo(dst.String())
 		}
 	}
 
 	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
-		if port == 22 && services.Contains("tailscale-ssh") {
+		if port == 22 && services.Contains("no-auth-ssh") {
 			return s.HandleTailscaleSSHConn
 		}
-		if *flagBeExitNode {
+		if services.Contains("exit-node") {
 			// Being an exit node includes localhost without needing
 			// to specify all the local port ranges.
 			return tcpForwardTo(fmt.Sprintf("localhost:%v", port))
@@ -396,6 +400,11 @@ func server(logf logger.Logf) {
 	select {}
 }
 
+var (
+	portRangeRx = regexp.MustCompile(`^\d+-\d+$`)
+	numRx       = regexp.MustCompile(`^\d+$`)
+)
+
 func parsePortSet(s string) (ports set.Set[uint16], services set.Set[string], _ error) {
 	services = set.Set[string]{}
 	if s == "" {
@@ -405,24 +414,31 @@ func parsePortSet(s string) (ports set.Set[uint16], services set.Set[string], _ 
 	s = strings.TrimSpace(s)
 
 	for _, r := range strings.Split(s, ",") {
+		r = strings.TrimSpace(r)
 		switch r {
 		case "all":
 			for i := 1; i <= 65535; i++ {
 				ret.Add(uint16(i))
 			}
 			continue
-		case "tssh":
-			services.Add("tailscale-ssh")
+		case "no-auth-ssh", "exit-node":
+			services.Add(r)
 			continue
 		}
-		a, b, ok := strings.Cut(strings.TrimSpace(r), "-")
+		if !numRx.MatchString(r) && !portRangeRx.MatchString(r) {
+			return nil, nil, fmt.Errorf("%q is not a known named service (want one of: all, no-auth-ssh, exit-node)", r)
+		}
+		a, b := r, ""
+		if portRangeRx.MatchString(r) {
+			a, b, _ = strings.Cut(r, "-")
+		}
 
 		lo, err := strconv.ParseUint(a, 10, 16)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%q is not a valid port number", a)
+			return nil, nil, fmt.Errorf("%q is not a valid port", a)
 		}
 		hi := lo
-		if ok {
+		if b != "" {
 			hi, err = strconv.ParseUint(b, 10, 16)
 			if err != nil {
 				return nil, nil, fmt.Errorf("%q is not a valid port number", b)
