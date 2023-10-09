@@ -809,7 +809,7 @@ func (b *locoBackend) sshPolicy() *tailcfg.SSHPolicy {
 				Principals: []*tailcfg.SSHPrincipal{{Any: true}},
 				SSHUsers:   map[string]string{"*": os.Getenv("USER")},
 				Action: &tailcfg.SSHAction{
-					Message: "Welcome to DERPcat SSH.\n\n",
+					Message: "\nWelcome to DERPcat SSH.\n\n",
 					Accept:  true,
 				},
 			},
