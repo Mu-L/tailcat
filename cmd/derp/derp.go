@@ -106,28 +106,23 @@ func main() {
 		server(logf)
 		return
 	}
-	if len(args) >= 3 && args[0] == "socks" {
+	switch args[0] {
+	case "socks":
 		clientSOCKSMode(logf)
-		return
-	}
-	if len(args) >= 2 && args[0] == "ssh" {
+	case "ssh":
 		clientSSHMode(logf)
-		return
-	}
-	if len(args) >= 2 && args[0] == "parse" {
+	case "parse":
 		clientParseMode(logf)
-		return
-	}
-
-	if (len(args) == 1 || len(args) == 2) && strings.HasPrefix(args[0], "dc") {
+	default:
+		if !strings.HasPrefix(args[0], "dc") {
+			usage(fmt.Sprintf("unknown subcommand %q", args[0]))
+		}
 		var dst string
 		if len(args) == 2 {
 			dst = args[1]
 		}
 		clientMode(logf, args[0], dst)
-		return
 	}
-	panic("TODO")
 }
 
 func clientMode(logf logger.Logf, connStr, optDest string) {
@@ -207,7 +202,10 @@ func clientMode(logf logger.Logf, connStr, optDest string) {
 }
 
 func clientSOCKSMode(logf logger.Logf) {
-	args := flag.Args()
+	args := flag.Args() // "socks", <derpaddr>, <cmd>, [args...]
+	if len(args) < 3 {
+		usage("derp socks <derpaddr> <cmd> [args...]")
+	}
 	progArgs := args[2:]
 
 	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(args[1]))
@@ -260,6 +258,9 @@ func clientSOCKSMode(logf logger.Logf) {
 
 func clientParseMode(logf logger.Logf) {
 	args := flag.Args()
+	if len(args) != 2 {
+		usage("derp parse <derpaddr>")
+	}
 	dst := args[1]
 	ci, err := derpcat.ParseConnBlob(derpcat.ConnBlob(dst))
 	if err != nil {
@@ -273,6 +274,9 @@ func clientParseMode(logf logger.Logf) {
 func clientSSHMode(logf logger.Logf) {
 	args := flag.Args()
 	args = args[1:] // trim off "ssh"
+	if len(args) == 0 {
+		usage("derp ssh [-p <port|ip:port)> [user@]<derpaddr>")
+	}
 
 	portOrIPPort := "22"
 	if len(args) >= 2 && args[0] == "-p" {
