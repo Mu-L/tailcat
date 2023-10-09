@@ -7,3 +7,4 @@
   is required in meow.
 - persistent named server keys. write pub/priv keypair
   to disk. (with pub just being the connblob)
+- base-emoji? https://github.com/pfrazee/base-emoji

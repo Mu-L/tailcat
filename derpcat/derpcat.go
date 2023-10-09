@@ -53,7 +53,7 @@ type ConnInfo struct {
 	// but the ConnBlob is longer.
 	//
 	// As of 2023-09-22, a maximum of 1 region may be provided.
-	Region []*tailcfg.DERPRegion `cbor:"r,omitempty"`
+	Region []*tailcfg.DERPRegion `cbor:"r,omitempty" json:",omitempty"`
 
 	// RegionID lists the number of one of Tailscale's provided
 	// DERP servers. If set, Region may be omitted and the ConnBlob
@@ -325,14 +325,14 @@ func (ci *ConnInfo) ConnBlob() ConnBlob {
 		log.Printf("ConnBlob: %q", x)
 		log.Printf("ConnBlob: %x", x)
 	}
-	return "derpcat-" + ConnBlob(base64.RawURLEncoding.EncodeToString(x))
+	return "dc" + ConnBlob(base64.RawURLEncoding.EncodeToString(x))
 }
 
 func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 	var zero ConnInfo
-	rest, ok := strings.CutPrefix(string(cb), "derpcat-")
+	rest, ok := strings.CutPrefix(string(cb), "dc")
 	if !ok {
-		return zero, errors.New("server doesn't start with \"derpcat-\"")
+		return zero, errors.New("server address doesn't start with \"dc\"")
 	}
 	x, err := base64.RawURLEncoding.DecodeString(rest)
 	if err != nil {
