@@ -3,6 +3,7 @@ package main
 // TODO: in dev derp mode: 2023/09/14 21:26:25 magicsock: last netcheck reported send error. Rebinding.
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -16,13 +17,17 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"go4.org/mem"
+	xmaps "golang.org/x/exp/maps"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"tailscale.com/derp"
 	"tailscale.com/derp/derphttp"
@@ -36,9 +41,9 @@ import (
 )
 
 var (
-	flagServe        = flag.String("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it listens only on port 0 and writes to stdout.")
-	flagVerbose      = flag.Bool("verbose", false, "be verbose")
-	flagEmbedDERPMap = flag.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
+	flagServe   = flag.String("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it listens only on port 0 and writes to stdout.")
+	flagKey     = flag.String("key", "", "'new' for an ephemeral one, '' for the 'default' key (if it exists), else a new key. Otherwise the path to a *.key.json or a name like 'foo' to read it from $CONFIG/derpcat/keys/foo.key.json")
+	flagVerbose = flag.Bool("verbose", false, "be verbose")
 )
 
 func usage(err string) {
@@ -113,6 +118,8 @@ func main() {
 		clientSSHMode(logf)
 	case "parse":
 		clientParseMode(logf)
+	case "genkey":
+		genKey()
 	default:
 		if !strings.HasPrefix(args[0], "dc") {
 			usage(fmt.Sprintf("unknown subcommand %q", args[0]))
@@ -314,13 +321,50 @@ func server(logf logger.Logf) {
 	if envknob.Bool("TS_DEBUG_DC_LOCAL_DERP") {
 		log.Printf("Local DERP mode.")
 		reg = runDevDERP(logger.WithPrefix(logf, "[dev-derp] "))
-	} else {
-		reg, err = derpcat.PickRegion()
-		if err != nil {
-			log.Fatalf("finding DERP region: %v", err)
+	}
+
+	var priv key.NodePrivate
+	var ci *derpcat.ConnInfo
+
+	if *flagKey == "" {
+		if _, err := os.Stat(keyPath("default")); err == nil {
+			*flagKey = "default"
 		}
 	}
-	priv := key.NewNode()
+	var connStr derpcat.ConnBlob
+	if *flagKey == "new" {
+		priv = key.NewNode()
+		ci = &derpcat.ConnInfo{RegionID: -1} // auto-detect
+	} else {
+		path := keyPath(*flagKey)
+		j, err := os.ReadFile(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		var conf derpcat.PrivateKey
+		if err := json.Unmarshal(j, &conf); err != nil {
+			log.Fatalf("failed to parse %v: %v", path, err)
+		}
+		priv = conf.Private
+		ci = &conf.Public
+		connStr = ci.ConnBlob()
+	}
+	if reg == nil {
+		if err := ci.Expand(context.Background()); err != nil {
+			log.Fatalf("Expand: %v", err)
+		}
+		reg = ci.Region[0]
+		if *flagKey == "new" {
+			ci = &derpcat.ConnInfo{
+				ServerPublic: derpcat.NodePublic{NodePublic: priv.Public()},
+				RegionID:     reg.RegionID,
+			}
+		}
+	}
+	if connStr == "" {
+		connStr = ci.ConnBlob()
+	}
+
 	s, err := derpcat.NewServer(priv, logf, reg)
 	if err != nil {
 		log.Fatalf("NewServer: %v", err)
@@ -385,8 +429,7 @@ func server(logf logger.Logf) {
 	if err := s.Start(); err != nil {
 		log.Fatalf("Server.Start: %v", err)
 	}
-	connStr := s.ConnBlob(*flagEmbedDERPMap)
-	fmt.Fprintf(os.Stderr, "# Server derpaddr: %v\n", connStr)
+	fmt.Fprintf(os.Stderr, "# Server listening at: %v\n", connStr)
 	if v := os.Getenv("DC_ADDR_FILE"); v != "" {
 		if err := os.WriteFile(v, []byte(connStr), 0600); err != nil {
 			log.Fatal(err)
@@ -489,4 +532,141 @@ func runDevDERP(logf logger.Logf) *tailcfg.DERPRegion {
 			},
 		},
 	}
+}
+
+func keyIsPath(name string) bool {
+	return strings.ContainsAny(name, `/\`)
+}
+
+func keyPath(name string) string {
+	if keyIsPath(name) {
+		return name
+	}
+	confDir, err := os.UserConfigDir()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return filepath.Join(confDir, "derpcat", "keys", name+".private.json")
+}
+
+func genKey() {
+	if *flagKey != "" {
+		log.Fatalf("genkey's --key argument must be after \"genkey\"")
+	}
+	args := flag.Args()
+	fs := flag.NewFlagSet("genkey", flag.ExitOnError)
+
+	confDir, err := os.UserConfigDir()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var (
+		key          = fs.String("key", "default", "key path (if it contains a slash) or name (written to "+confDir+"/derpcat/keys/<name>.private.json)")
+		force        = fs.Bool("force", false, "force overwrite of existing key")
+		region       = fs.String("region", "1", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s).")
+		embedDERPMap = fs.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
+	)
+	fs.Parse(args[1:]) // stripping off "genkey"
+	switch len(fs.Args()) {
+	case 0:
+	default:
+		fmt.Fprintf(os.Stderr, "derp genkey [-name=<name>] [-force] [name]\n")
+		os.Exit(1)
+	}
+
+	if !keyIsPath(*key) {
+		*key = keyPath(*key)
+		if err := os.MkdirAll(filepath.Dir(*key), 0700); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(*key); err == nil {
+		if !*force {
+			log.Fatalf("%v already exists; use --force to overwrite", *key)
+		}
+	}
+
+	priv := derpcat.NewPrivateKey()
+	var match string
+	if n, err := strconv.Atoi(*region); err == nil {
+		priv.Public.RegionID = n
+	} else if strings.Contains(*region, ".") {
+		hosts := strings.Split(*region, ",")
+		reg := &tailcfg.DERPRegion{}
+		priv.Public.Region = append(priv.Public.Region, reg)
+		for _, host := range hosts {
+			reg.Nodes = append(reg.Nodes, &tailcfg.DERPNode{
+				HostName: host,
+			})
+		}
+	} else {
+		match = *region
+	}
+
+	var dm tailcfg.DERPMap
+	if match != "" || *region == "" || *embedDERPMap {
+		res, err := http.Get("https://login.tailscale.com/derpmap/default")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != 200 {
+			log.Fatalf("derpmap fetch: %v", res.Status)
+		}
+		if err := json.NewDecoder(res.Body).Decode(&dm); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if *region == "" {
+		log.Fatalf("TODO: pick a region automatically from netcheck over derpmap")
+	}
+
+	ci := &priv.Public
+	ci.RegionID = findRegionIDFromSubstring(&dm, match)
+	if ci.RegionID == 0 {
+		regs := xmaps.Values(dm.Regions)
+		slices.SortFunc(regs, func(a, b *tailcfg.DERPRegion) int { return cmp.Compare(a.RegionID, b.RegionID) })
+		for _, reg := range regs {
+			fmt.Fprintf(os.Stderr, "  %3d %s %s\n", reg.RegionID, reg.RegionCode, reg.RegionName)
+		}
+		log.Fatalf("\nno region found matching %q", match)
+	}
+	if *embedDERPMap {
+		reg := dm.Regions[ci.RegionID]
+		reg.Nodes = reg.Nodes[:min(2, len(reg.Nodes))]
+		for _, n := range reg.Nodes {
+			n.IPv6 = ""
+		}
+		ci.Region = append(ci.Region, reg)
+		ci.RegionID = 0
+	}
+
+	privj, err := json.MarshalIndent(priv, "", "\t")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := os.WriteFile(*key, privj, 0600); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "# wrote file to %v\n", *key)
+	fmt.Println(priv.Public.ConnBlob())
+}
+
+// or returns 0 on no match
+func findRegionIDFromSubstring(dm *tailcfg.DERPMap, s string) (regionID int) {
+	// First look my region code
+	for _, r := range dm.Regions {
+		if strings.EqualFold(r.RegionCode, s) {
+			return r.RegionID
+		}
+	}
+	// Then look by substring
+	for _, r := range dm.Regions {
+		if mem.ContainsFold(mem.S(r.RegionName), mem.S(s)) {
+			return r.RegionID
+		}
+	}
+	return 0
 }
