@@ -81,6 +81,22 @@ func (a NodePublic) Equal(b NodePublic) bool {
 	return a == b
 }
 
+type PrivateKey struct {
+	Private key.NodePrivate
+	Public  ConnInfo
+}
+
+// NewPrivateKey returns a new PrivateKey, but without
+// the DERP region populated. It's up to the caller to
+// populate that.
+func NewPrivateKey() *PrivateKey {
+	ret := &PrivateKey{
+		Private: key.NewNode(),
+	}
+	ret.Public.ServerPublic = NodePublic{ret.Private.Public()}
+	return ret
+}
+
 // locoBackend is like tailscaled's LocalBackend, but crazier.
 // It serves a similar purpose (to be the hub of the world)
 // but there's no controlclient involved, because there's
@@ -230,8 +246,8 @@ func (s *Server) Addr() netip.Addr { return s.lb.addr }
 func (s *Server) Start() error     { return s.lb.Start() }
 func (s *Server) Close() error     { return s.lb.Close() }
 
-func (s *Server) ConnBlob(embedDERPMap bool) ConnBlob {
-	return s.lb.ConnBlob(embedDERPMap)
+func (s *Server) ConnBlobForTest() ConnBlob {
+	return s.lb.ConnBlobForTest()
 }
 
 func newLocoBackend(priv key.NodePrivate) *locoBackend {
@@ -248,46 +264,20 @@ func newLocoBackend(priv key.NodePrivate) *locoBackend {
 	return lb
 }
 
-func PickRegion() (*tailcfg.DERPRegion, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_ = ctx // TODO: conditionally fetch/refresh derpmap?
-	return &tailcfg.DERPRegion{
-		RegionID:   10,
-		RegionCode: "sea",
-		Nodes: []*tailcfg.DERPNode{
-			{
-				HostName: "derp10b.tailscale.com",
-				IPv4:     "192.73.240.161",
-			},
-			{
-				HostName: "derp10c.tailscale.com",
-				IPv4:     "192.73.240.121",
-			},
-		},
-	}, nil
-}
-
 var debugConnBlob = envknob.Bool("TS_DEBUG_CONNBLOB")
 
-func (lb *locoBackend) ConnBlob(embedDERPMap bool) ConnBlob {
+func (lb *locoBackend) ConnBlobForTest() ConnBlob {
 	if lb.dm == nil {
 		panic("no DERPMap set")
 	}
 	var ci ConnInfo
 	ci.ServerPublic = NodePublic{lb.pub}
 	for _, r := range lb.dm.Regions {
-		if embedDERPMap {
-			ci.Region = append(ci.Region, r)
-		} else {
-			ci.RegionID = r.RegionID
-		}
+		ci.Region = append(ci.Region, r)
 	}
 	if len(lb.dm.Regions) == 0 {
 		panic("no regions in derpmap")
 	}
-
 	if debugConnBlob {
 		log.Printf("ConnBlob: %v", logger.AsJSON(ci))
 	}
@@ -383,6 +373,16 @@ func (ci *ConnInfo) Expand(ctx context.Context) error {
 	var dm tailcfg.DERPMap
 	if err := json.NewDecoder(res.Body).Decode(&dm); err != nil {
 		return fmt.Errorf("fetching DERPMap for region %v, invalid JSON from %v: %w", ci.RegionID, req.URL, err)
+	}
+	if ci.RegionID == -1 {
+		for regID := 1; regID <= 10; regID++ {
+			if r, ok := dm.Regions[regID]; ok {
+				ci.RegionID = 0
+				ci.Region = append(ci.Region, r)
+				return nil
+			}
+		}
+		return errors.New("failed to auto-detect any regions")
 	}
 	r, ok := dm.Regions[ci.RegionID]
 	if !ok {
