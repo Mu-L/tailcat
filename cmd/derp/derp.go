@@ -121,14 +121,33 @@ func main() {
 	case "genkey":
 		genKey()
 	default:
-		if !strings.HasPrefix(args[0], "dc") {
-			usage(fmt.Sprintf("unknown subcommand %q", args[0]))
+		var addr string
+		if strings.HasPrefix(args[0], "dc") {
+			addr = args[0]
+		} else if strings.Contains(args[0], ".") {
+			// Maybe it's a DNS name with a TXT record?
+			var r net.Resolver
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			txts, err := r.LookupTXT(ctx, args[0])
+			if err != nil {
+				log.Fatalf("argument %q doesn't start with 'dc' and not a DNS name with a derpcat TXT record: %v", args[0], err)
+			}
+			for _, txt := range txts {
+				if suf, ok := strings.CutPrefix(txt, "derpcat="); ok {
+					addr = strings.TrimSpace(suf)
+					break
+				}
+			}
+		}
+		if addr == "" {
+			log.Fatalf("argument %q doesn't start with 'dc' and not a DNS name with a derpcat TXT record", args[0])
 		}
 		var dst string
 		if len(args) == 2 {
 			dst = args[1]
 		}
-		clientMode(logf, args[0], dst)
+		clientMode(logf, addr, dst)
 	}
 }
 
@@ -329,6 +348,10 @@ func server(logf logger.Logf) {
 	if *flagKey == "" {
 		if _, err := os.Stat(keyPath("default")); err == nil {
 			*flagKey = "default"
+		} else if os.IsNotExist(err) {
+			*flagKey = "new"
+		} else {
+			log.Fatalf("failed to stat default key: %v", err)
 		}
 	}
 	var connStr derpcat.ConnBlob
@@ -582,7 +605,7 @@ func genKey() {
 		}
 	}
 	if _, err := os.Stat(*key); err == nil {
-		if !*force {
+		if !*force && *region != "list" {
 			log.Fatalf("%v already exists; use --force to overwrite", *key)
 		}
 	}
@@ -623,14 +646,19 @@ func genKey() {
 	}
 
 	ci := &priv.Public
-	ci.RegionID = findRegionIDFromSubstring(&dm, match)
-	if ci.RegionID == 0 {
-		regs := xmaps.Values(dm.Regions)
-		slices.SortFunc(regs, func(a, b *tailcfg.DERPRegion) int { return cmp.Compare(a.RegionID, b.RegionID) })
-		for _, reg := range regs {
-			fmt.Fprintf(os.Stderr, "  %3d %s %s\n", reg.RegionID, reg.RegionCode, reg.RegionName)
+	if match != "" {
+		ci.RegionID = findRegionIDFromSubstring(&dm, match)
+		if ci.RegionID == 0 {
+			regs := xmaps.Values(dm.Regions)
+			slices.SortFunc(regs, func(a, b *tailcfg.DERPRegion) int { return cmp.Compare(a.RegionID, b.RegionID) })
+			for _, reg := range regs {
+				fmt.Fprintf(os.Stderr, "  %3d %s %s\n", reg.RegionID, reg.RegionCode, reg.RegionName)
+			}
+			if match == "list" {
+				os.Exit(0)
+			}
+			log.Fatalf("\nno region found matching %q", match)
 		}
-		log.Fatalf("\nno region found matching %q", match)
 	}
 	if *embedDERPMap {
 		reg := dm.Regions[ci.RegionID]
@@ -656,6 +684,9 @@ func genKey() {
 
 // or returns 0 on no match
 func findRegionIDFromSubstring(dm *tailcfg.DERPMap, s string) (regionID int) {
+	if s == "list" {
+		return 0
+	}
 	// First look my region code
 	for _, r := range dm.Regions {
 		if strings.EqualFold(r.RegionCode, s) {
