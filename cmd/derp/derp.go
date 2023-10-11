@@ -308,6 +308,9 @@ func clientSSHMode(logf logger.Logf) {
 	if len(args) >= 2 && args[0] == "-p" {
 		portOrIPPort = args[1]
 		args = args[2:]
+		if ip, err := netip.ParseAddr(portOrIPPort); err == nil {
+			portOrIPPort = netip.AddrPortFrom(ip, 22).String()
+		}
 	}
 	dst := args[0] // either a derpaddr alone or "user@<derpaddr>"
 
@@ -587,6 +590,7 @@ func genKey() {
 	var (
 		key          = fs.String("key", "default", "key path (if it contains a slash) or name (written to "+confDir+"/derpcat/keys/<name>.private.json)")
 		force        = fs.Bool("force", false, "force overwrite of existing key")
+		delete       = fs.Bool("delete", false, "delete named key instead of generating it; only valid if key doesn't contain slashes")
 		region       = fs.String("region", "1", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s).")
 		embedDERPMap = fs.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
 	)
@@ -598,6 +602,13 @@ func genKey() {
 		os.Exit(1)
 	}
 
+	if *delete {
+		if keyIsPath(*key) {
+			log.Fatalf("can't delete key %q; it's a path", *key)
+		}
+		os.Remove(keyPath(*key))
+		return
+	}
 	if !keyIsPath(*key) {
 		*key = keyPath(*key)
 		if err := os.MkdirAll(filepath.Dir(*key), 0700); err != nil {
