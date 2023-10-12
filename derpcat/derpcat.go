@@ -352,6 +352,17 @@ func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 }
 
 func (ci *ConnInfo) Expand(ctx context.Context) error {
+	for _, r := range ci.Region {
+		if r.RegionID == 0 {
+			r.RegionID = 1
+		}
+		for _, n := range r.Nodes {
+			if n.RegionID == 0 {
+				n.RegionID = r.RegionID
+			}
+		}
+	}
+
 	if len(ci.Region) > 0 || ci.RegionID == 0 {
 		return nil
 	}
