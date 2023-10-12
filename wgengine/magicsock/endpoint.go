@@ -519,7 +519,6 @@ func (de *endpoint) send(buffs [][]byte) error {
 		if allOk {
 			return nil
 		}
-		panic(fmt.Sprintf("boom sending to %v", derpAddr))
 	}
 	return err
 }
