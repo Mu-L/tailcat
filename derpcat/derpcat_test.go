@@ -76,7 +76,7 @@ func TestDERPCat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c, err := NewClient(mkLogger(t, "client"), s.ConnBlobForTest())
+	c, err := NewClient(mkLogger(t, "client"), s.ConnBlobForTest(), key.NewNode())
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

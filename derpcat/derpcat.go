@@ -112,9 +112,10 @@ type locoBackend struct {
 	logf       logger.Logf
 	serverPub  key.NodePublic // non-zero if we're a client (server's public key)
 
-	mu      sync.Mutex
-	clients map[key.NodePublic]*tailcfg.Node // for the server
-	nm      *netmap.NetworkMap
+	mu             sync.Mutex
+	clients        map[key.NodePublic]*tailcfg.Node // for the server
+	nm             *netmap.NetworkMap
+	allowedClients map[key.NodePublic]bool // or nil map for all
 }
 
 func (b *locoBackend) derpRegionID() int {
@@ -245,6 +246,15 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 func (s *Server) Addr() netip.Addr { return s.lb.addr }
 func (s *Server) Start() error     { return s.lb.Start() }
 func (s *Server) Close() error     { return s.lb.Close() }
+
+// AddAllowedClient adds k as an allowed client.
+//
+// Before this method is called once, all clients are allowed.
+func (s *Server) AddAllowedClient(k key.NodePublic) {
+	s.lb.mu.Lock()
+	defer s.lb.mu.Unlock()
+	mak.Set(&s.lb.allowedClients, k, true)
+}
 
 func (s *Server) ConnBlobForTest() ConnBlob {
 	return s.lb.ConnBlobForTest()
@@ -508,6 +518,12 @@ func (lb *locoBackend) Start() error {
 func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.logf("got meow from %v", src.String())
+	if b.allowedClients != nil && !b.allowedClients[src] {
+		log.Printf("ignoring meow from %v: not in allowedClients", src.String())
+		return
+	}
+
 	if _, ok := b.clients[src]; ok {
 		return
 	}
@@ -634,7 +650,7 @@ type Client struct {
 	serverAddr netip.Addr
 }
 
-func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
+func NewClient(logf logger.Logf, server ConnBlob, priv key.NodePrivate) (*Client, error) {
 	ci, err := ParseConnBlob(server)
 	if err != nil {
 		return nil, err
@@ -644,7 +660,6 @@ func NewClient(logf logger.Logf, server ConnBlob) (*Client, error) {
 		return nil, err
 	}
 
-	priv := key.NewNode()
 	lb := newLocoBackend(priv)
 	lb.logf = logf
 	lb.dm = &tailcfg.DERPMap{}
