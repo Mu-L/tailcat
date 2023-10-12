@@ -43,6 +43,7 @@ import (
 var (
 	flagServe   = flag.String("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it listens only on port 0 and writes to stdout.")
 	flagKey     = flag.String("key", "", "'new' for an ephemeral one, '' for the 'default' key (if it exists), else a new key. Otherwise the path to a *.key.json or a name like 'foo' to read it from $CONFIG/derpcat/keys/foo.key.json")
+	flagAllow   = flag.String("allow", "", "comma-separated list of public keys to allow access to the server")
 	flagVerbose = flag.Bool("verbose", false, "be verbose")
 )
 
@@ -120,6 +121,8 @@ func main() {
 		clientParseMode(logf)
 	case "genkey":
 		genKey()
+	case "printpub":
+		fmt.Println(clientKey().Public().String())
 	default:
 		var addr string
 		if strings.HasPrefix(args[0], "dc") {
@@ -151,8 +154,33 @@ func main() {
 	}
 }
 
+func clientKey() key.NodePrivate {
+	if *flagKey == "" {
+		path := keyPath("client-default")
+		if _, err := os.Stat(path); err == nil {
+			*flagKey = "client-default"
+		} else {
+			return key.NewNode()
+		}
+	}
+	if *flagKey == "new" {
+		return key.NewNode()
+	}
+	path := keyPath(*flagKey)
+	j, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var conf derpcat.PrivateKey
+	if err := json.Unmarshal(j, &conf); err != nil {
+		log.Fatalf("failed to parse %v: %v", path, err)
+	}
+	return conf.Private
+}
+
 func clientMode(logf logger.Logf, connStr, optDest string) {
-	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(connStr))
+	priv := clientKey()
+	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(connStr), priv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -234,7 +262,7 @@ func clientSOCKSMode(logf logger.Logf) {
 	}
 	progArgs := args[2:]
 
-	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(args[1]))
+	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(args[1]), key.NewNode())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -326,7 +354,7 @@ func clientSSHMode(logf logger.Logf) {
 		"/usr/bin/ssh",
 		"-o", "UpdateHostKeys no",
 		"-o", "StrictHostKeyChecking no",
-		"-o", fmt.Sprintf("ProxyCommand=%s %s %s", exe, connBlobStr, portOrIPPort),
+		"-o", fmt.Sprintf("ProxyCommand=%s --key=%q %s %s", exe, *flagKey, connBlobStr, portOrIPPort),
 		dst,
 	}
 	err = syscall.Exec("/usr/bin/ssh", argv, os.Environ())
@@ -397,6 +425,19 @@ func server(logf logger.Logf) {
 	}
 	if services.Contains("no-auth-ssh") && !s.CanRunSSHServer() {
 		log.Fatalf("Tailscale SSH server not supported on %v", runtime.GOOS)
+	}
+	if *flagAllow != "" {
+		for _, ks := range strings.Split(*flagAllow, ",") {
+			if ks == "none" {
+				s.AddAllowedClient(key.NodePublic{})
+				continue
+			}
+			var k key.NodePublic
+			if err := k.UnmarshalText([]byte(ks)); err != nil {
+				log.Fatalf("invalid key %q in --allow: %v", ks, err)
+			}
+			s.AddAllowedClient(k)
+		}
 	}
 
 	tcpForwardTo := func(ipPortStr string) func(net.Conn) {
