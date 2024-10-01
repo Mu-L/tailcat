@@ -158,6 +158,8 @@ func (c *Client) parseServerInfo(b []byte) (*serverInfo, error) {
 	return info, nil
 }
 
+const ClientName = "tp-vc"
+
 type clientInfo struct {
 	// Version is the DERP protocol version that the client was built with.
 	// See the ProtocolVersion const.
@@ -175,6 +177,10 @@ type clientInfo struct {
 
 	// IsProber is whether this client is a prober.
 	IsProber bool `json:",omitempty"`
+
+	// Client is a client identifier for stats.
+	// It's usually unset.
+	Client string `json:"tailpipe,omitempty"`
 }
 
 func (c *Client) sendClientKey() error {
@@ -183,6 +189,7 @@ func (c *Client) sendClientKey() error {
 		MeshKey:     c.meshKey,
 		CanAckPings: c.canAckPings,
 		IsProber:    c.isProber,
+		Client:      ClientName,
 	})
 	if err != nil {
 		return err

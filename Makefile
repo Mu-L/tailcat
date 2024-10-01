@@ -85,3 +85,14 @@ help: ## Show this help
 .PHONY: help
 
 .DEFAULT_GOAL := help
+
+tailpipe:
+	./tool/go install ./cmd/tailpipe
+
+tailpipe-release:
+	GOOS=linux GOARCH=amd64 ./tool/go build -o tailpipe.linux-amd64 ./cmd/tailpipe
+	GOOS=linux GOARCH=arm64 ./tool/go build -o tailpipe.linux-arm64 ./cmd/tailpipe
+	GOOS=darwin GOARCH=amd64 ./tool/go build -o tailpipe.darwin-amd64 ./cmd/tailpipe
+	GOOS=darwin GOARCH=arm64 ./tool/go build -o tailpipe.darwin-arm64 ./cmd/tailpipe
+	tar zcvf tailpipe.tar.gz tailpipe.{linux,darwin}-{amd64,arm64}
+	

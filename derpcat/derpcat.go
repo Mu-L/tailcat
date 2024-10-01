@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -361,7 +363,7 @@ func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 	return ci, nil
 }
 
-func (ci *ConnInfo) Expand(ctx context.Context) error {
+func (ci *ConnInfo) Expand(ctx context.Context, forServer bool) error {
 	for _, r := range ci.Region {
 		if r.RegionID == 0 {
 			r.RegionID = 1
@@ -383,6 +385,11 @@ func (ci *ConnInfo) Expand(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetching DERPMap for region %v: %w", ci.RegionID, err)
 	}
+	if forServer {
+		req.Header.Add("Tailpipe-User", "vc-listen")
+	} else {
+		req.Header.Add("Tailpipe-User", "vc")
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetching DERPMap for region %v: %w", ci.RegionID, err)
@@ -396,7 +403,17 @@ func (ci *ConnInfo) Expand(ctx context.Context) error {
 		return fmt.Errorf("fetching DERPMap for region %v, invalid JSON from %v: %w", ci.RegionID, req.URL, err)
 	}
 	if ci.RegionID == -1 {
-		for regID := 1; regID <= 10; regID++ {
+		// Make a random order of the first 10 region IDs and return the first
+		// one we find that exists, ignoring what's close to the user. Avoid
+		// STUN, etc. Assume the server will filter things away based on our
+		// IP when the Tailpipe-User == "vc-listen".
+		regIDs := make([]int, 10)
+		for i := range regIDs {
+			regIDs[i] = i + 1
+		}
+		rand.Shuffle(len(regIDs), reflect.Swapper(regIDs))
+
+		for _, regID := range regIDs {
 			if r, ok := dm.Regions[regID]; ok {
 				ci.RegionID = 0
 				ci.Region = append(ci.Region, r)
@@ -656,7 +673,7 @@ func NewClient(logf logger.Logf, server ConnBlob, priv key.NodePrivate) (*Client
 		return nil, err
 	}
 
-	if err := ci.Expand(context.TODO()); err != nil {
+	if err := ci.Expand(context.TODO(), false); err != nil {
 		return nil, err
 	}
 
@@ -835,7 +852,7 @@ func (b *locoBackend) sshPolicy() *tailcfg.SSHPolicy {
 				Principals: []*tailcfg.SSHPrincipal{{Any: true}},
 				SSHUsers:   map[string]string{"*": os.Getenv("USER")},
 				Action: &tailcfg.SSHAction{
-					Message: "\nWelcome to DERPcat SSH.\n\n",
+					Message: "\nWelcome to Tailpipe SSH.\n\n",
 					Accept:  true,
 				},
 			},

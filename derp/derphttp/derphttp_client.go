@@ -446,6 +446,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 	}
 	req.Header.Set("Upgrade", "DERP")
 	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Client-Name", derp.ClientName)
 
 	if !serverPub.IsZero() && serverProtoVersion != 0 {
 		// parseMetaCert found the server's public key (no TLS

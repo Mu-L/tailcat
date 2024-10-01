@@ -4,4 +4,4 @@
 # currently-desired version from https://github.com/tailscale/go,
 # downloading it first if necessary.
 
-exec "$(dirname "$0")/../tool/gocross/gocross-wrapper.sh" "$@"
+exec "$HOME/go/bin/go1.21.13" "$@"
