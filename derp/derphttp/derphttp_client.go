@@ -508,6 +508,7 @@ func (c *Client) connect(ctx context.Context, caller string) (client *derp.Clien
 		// next connect that comes in"). Tracking bug for all this is:
 		// https://github.com/tailscale/tailscale/issues/12724
 	}
+	req.Header.Set("Client-Name", derp.ClientName)
 
 	if !serverPub.IsZero() && serverProtoVersion != 0 {
 		// parseMetaCert found the server's public key (no TLS

@@ -42,7 +42,7 @@ import (
 
 var (
 	flagServe   = flag.String("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it listens only on port 0 and writes to stdout.")
-	flagKey     = flag.String("key", "", "'new' for an ephemeral one, '' for the 'default' key (if it exists), else a new key. Otherwise the path to a *.key.json or a name like 'foo' to read it from $CONFIG/derpcat/keys/foo.key.json")
+	flagKey     = flag.String("key", "", "'new' for an ephemeral one, '' for the 'default' key (if it exists), else a new key. Otherwise the path to a *.key.json or a name like 'foo' to read it from $CONFIG/tailpipe/keys/foo.key.json")
 	flagAllow   = flag.String("allow", "", "comma-separated list of public keys to allow access to the server")
 	flagVerbose = flag.Bool("verbose", false, "be verbose")
 )
@@ -55,43 +55,43 @@ func usage(err string) {
 
 Server mode, accept one connection (any port), write to stdout:
 
-	derp
+	tailpipe
 
 Server mode, given ports:
 
-	derp --serve=22,80,443,8000-8999
+	tailpipe --serve=22,80,443,8000-8999
 
 Server mode, all ports:
 
-	derp --serve=all
+	tailpipe --serve=all
 
 Server mode, certain ports and Tailscale SSH (auth without
 password or public key):
 
-	derp --serve=80,no-auth-ssh
+	tailpipe --serve=80,no-auth-ssh
 
 Client mode, to default port 0 for stdin/stdout pipe:
 
-	echo hello | derp <derpaddr>
+	echo hello | tailpipe <addrblob>
 
 Client mode to an explicit pipe:
 
-	echo "GET / HTTP/1.1..." | derp <derpaddr> 80
+	echo "GET / HTTP/1.1..." | tailpipe <addrblob> 80
 
 Client mode, ssh:
 
-	dc ssh <derpaddr>
+	tailpipe ssh <addrblob>
 
-Client mode, ssh to specific IP:port via derpaddr's exit node:
+Client mode, ssh to specific IP:port via addrblob's exit node:
 
-	dc ssh -p 10.0.0.1:22 <derpaddr>
+	tailpipe ssh -p 10.0.0.1:22 <addrblob>
 
 Client mode, run an ephemeral socks (socks5h) proxy and pass
 its address as 'all_proxy' environment variable to a child
 process:
 
-	dc socks <derpaddr> <cmd> [args...]
-	dc socks <derpaddr> curl http://server.derpcat:8081/
+	tailpipe socks <addrblob> <cmd> [args...]
+	tailpipe socks <addrblob> curl http://server.tailpipe:8081/
 `)
 	os.Exit(1)
 }
@@ -134,17 +134,17 @@ func main() {
 			defer cancel()
 			txts, err := r.LookupTXT(ctx, args[0])
 			if err != nil {
-				log.Fatalf("argument %q doesn't start with 'dc' and not a DNS name with a derpcat TXT record: %v", args[0], err)
+				log.Fatalf("argument %q doesn't start with 'dc' and not a DNS name with a tailpipe TXT record: %v", args[0], err)
 			}
 			for _, txt := range txts {
-				if suf, ok := strings.CutPrefix(txt, "derpcat="); ok {
+				if suf, ok := strings.CutPrefix(txt, "tailpipe="); ok {
 					addr = strings.TrimSpace(suf)
 					break
 				}
 			}
 		}
 		if addr == "" {
-			log.Fatalf("argument %q doesn't start with 'dc' and not a DNS name with a derpcat TXT record", args[0])
+			log.Fatalf("argument %q doesn't start with 'dc' and not a DNS name with a tailpipe TXT record", args[0])
 		}
 		var dst string
 		if len(args) == 2 {
@@ -208,7 +208,7 @@ func clientMode(logf logger.Logf, connStr, optDest string) {
 	}
 	pi, err := cl.Ping(context.Background())
 	if err != nil {
-		log.Fatalf("derpcat.Ping: %v", err)
+		log.Fatalf("tailpipe Ping: %v", err)
 	}
 	if *flagVerbose {
 		logf("got ping: %+v", pi)
@@ -271,7 +271,7 @@ func clientSOCKSMode(logf logger.Logf) {
 	}
 	pi, err := cl.Ping(context.Background())
 	if err != nil {
-		log.Fatalf("derpcat.Ping: %v", err)
+		log.Fatalf("tailpipe Ping: %v", err)
 	}
 	logf("got ping: %+v", pi)
 
@@ -613,7 +613,7 @@ func keyPath(name string) string {
 	if err != nil {
 		log.Fatal(err)
 	}
-	return filepath.Join(confDir, "derpcat", "keys", name+".private.json")
+	return filepath.Join(confDir, "tailpipe", "keys", name+".private.json")
 }
 
 func genKey() {
@@ -629,7 +629,7 @@ func genKey() {
 	}
 
 	var (
-		key          = fs.String("key", "default", "key path (if it contains a slash) or name (written to "+confDir+"/derpcat/keys/<name>.private.json)")
+		key          = fs.String("key", "default", "key path (if it contains a slash) or name (written to "+confDir+"/tailpipe/keys/<name>.private.json)")
 		force        = fs.Bool("force", false, "force overwrite of existing key")
 		delete       = fs.Bool("delete", false, "delete named key instead of generating it; only valid if key doesn't contain slashes")
 		region       = fs.String("region", "1", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s).")

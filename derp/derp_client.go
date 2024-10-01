@@ -160,6 +160,8 @@ func (c *Client) parseServerInfo(b []byte) (*serverInfo, error) {
 	return info, nil
 }
 
+const ClientName = "tp-vc"
+
 type clientInfo struct {
 	// MeshKey optionally specifies a pre-shared key used by
 	// trusted clients.  It's required to subscribe to the
@@ -177,6 +179,10 @@ type clientInfo struct {
 
 	// IsProber is whether this client is a prober.
 	IsProber bool `json:",omitempty"`
+
+	// Client is a client identifier for stats.
+	// It's usually unset.
+	Client string `json:"tailpipe,omitempty"`
 }
 
 func (c *Client) sendClientKey() error {
@@ -185,6 +191,7 @@ func (c *Client) sendClientKey() error {
 		MeshKey:     c.meshKey,
 		CanAckPings: c.canAckPings,
 		IsProber:    c.isProber,
+		Client:      ClientName,
 	})
 	if err != nil {
 		return err
