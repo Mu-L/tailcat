@@ -1,6 +1,7 @@
 package derpcat
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -34,7 +35,6 @@ import (
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
-	"tailscale.com/util/cmpx"
 	"tailscale.com/util/mak"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/filter"
@@ -577,7 +577,7 @@ func (b *locoBackend) onMeow(src key.NodePublic, discoPub key.DiscoPublic) {
 		nm.Peers = append(nm.Peers, n.View())
 	}
 	slices.SortFunc(nm.Peers, func(a, b tailcfg.NodeView) int {
-		return cmpx.Compare(a.ID(), b.ID())
+		return cmp.Compare(a.ID(), b.ID())
 	})
 	b.nm = nm
 
@@ -833,7 +833,7 @@ func (b *locoBackend) TailscaleVarRoot() string {
 	panic("unused")
 }
 
-func (b *locoBackend) WhoIs(ipp netip.AddrPort) (n tailcfg.NodeView, u tailcfg.UserProfile, ok bool) {
+func (b *locoBackend) WhoIs(proto string, ipp netip.AddrPort) (n tailcfg.NodeView, u tailcfg.UserProfile, ok bool) {
 	nv := (&tailcfg.Node{
 		ID:       1,
 		StableID: "one",
