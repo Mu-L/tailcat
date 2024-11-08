@@ -23,7 +23,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"go4.org/mem"
@@ -325,42 +324,6 @@ func clientParseMode(logf logger.Logf) {
 	e.Encode(ci)
 }
 
-func clientSSHMode(logf logger.Logf) {
-	args := flag.Args()
-	args = args[1:] // trim off "ssh"
-	if len(args) == 0 {
-		usage("derp ssh [-p <port|ip:port)> [user@]<derpaddr>")
-	}
-
-	portOrIPPort := "22"
-	if len(args) >= 2 && args[0] == "-p" {
-		portOrIPPort = args[1]
-		args = args[2:]
-		if ip, err := netip.ParseAddr(portOrIPPort); err == nil {
-			portOrIPPort = netip.AddrPortFrom(ip, 22).String()
-		}
-	}
-	dst := args[0] // either a derpaddr alone or "user@<derpaddr>"
-
-	connBlobStr := dst
-	if strings.Contains(dst, "@") {
-		_, connBlobStr, _ = strings.Cut(dst, "@")
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		log.Fatal(err)
-	}
-	argv := []string{
-		"/usr/bin/ssh",
-		"-o", "UpdateHostKeys no",
-		"-o", "StrictHostKeyChecking no",
-		"-o", fmt.Sprintf("ProxyCommand=%s --key=%q %s %s", exe, *flagKey, connBlobStr, portOrIPPort),
-		dst,
-	}
-	err = syscall.Exec("/usr/bin/ssh", argv, os.Environ())
-	log.Fatalf("failed to exec: %v", err)
-}
-
 func server(logf logger.Logf) {
 	portSet, services, err := parsePortSet(*flagServe)
 	if err != nil {
@@ -469,7 +432,7 @@ func server(logf logger.Logf) {
 	}
 
 	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
-		if port == 22 && services.Contains("no-auth-ssh") {
+		if port == 22 && services.Contains("no-auth-ssh") && tailPipeSSHEnabled {
 			return s.HandleTailscaleSSHConn
 		}
 		if services.Contains("exit-node") {
@@ -535,7 +498,13 @@ func parsePortSet(s string) (ports set.Set[uint16], services set.Set[string], _ 
 				ret.Add(uint16(i))
 			}
 			continue
-		case "no-auth-ssh", "exit-node":
+		case "no-auth-ssh":
+			if !tailPipeSSHEnabled {
+				return nil, nil, fmt.Errorf("SSH support not included in binary per build tags")
+			}
+			services.Add(r)
+			continue
+		case "exit-node":
 			services.Add(r)
 			continue
 		}
