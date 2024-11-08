@@ -642,10 +642,12 @@ func newNetstack(logf logger.Logf, sys *tsd.System) (*netstack.Impl, error) {
 // for all networking.
 func createEngine(logf logger.Logf, sys *tsd.System) (err error) {
 	conf := wgengine.Config{
-		ListenPort:   0,
-		NetMon:       sys.NetMon.Get(),
-		Dialer:       sys.Dialer.Get(),
-		SetSubsystem: sys.Set,
+		ListenPort:    0,
+		NetMon:        sys.NetMon.Get(),
+		Dialer:        sys.Dialer.Get(),
+		SetSubsystem:  sys.Set,
+		Metrics:       sys.UserMetricsRegistry(),
+		HealthTracker: sys.HealthTracker(),
 	}
 	netns.SetEnabled(false)
 	e, err := wgengine.NewUserspaceEngine(logf, conf)
