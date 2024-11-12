@@ -849,6 +849,8 @@ func (c *Conn) updateNetInfo(ctx context.Context) (*netcheck.Report, error) {
 		// the exact same state in two different places.
 		GetLastDERPActivity: c.health.GetDERPRegionReceivedTime,
 		OnlyTCP443:          c.onlyTCP443.Load(),
+
+		SkipCaptivePortal: true, // for derpcat
 	})
 	if err != nil {
 		return nil, err

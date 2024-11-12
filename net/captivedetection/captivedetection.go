@@ -111,6 +111,7 @@ func (d *Detector) detectCaptivePortalWithGOOS(ctx context.Context, netMon *netm
 // require it. We also avoid making requests on the interface prefixes "pdp" and "rmnet", which are cellular data
 // interfaces on iOS and Android, respectively, and would be needlessly battery-draining.
 func interfaceNameDoesNotNeedCaptiveDetection(ifName string, goos string) bool {
+	return true // derpcat
 	ifName = strings.ToLower(ifName)
 	excludedPrefixes := []string{"tailscale", "tun", "tap", "docker", "kube", "wg", "ipsec"}
 	if goos == "windows" {

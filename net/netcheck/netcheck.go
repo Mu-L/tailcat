@@ -771,6 +771,9 @@ type GetReportOpts struct {
 	// OnlyTCP443 constrains netcheck reporting to measurements over TCP port
 	// 443.
 	OnlyTCP443 bool
+
+	SkipCaptivePortal bool
+	StopOnFirstUDP    bool
 }
 
 // getLastDERPActivity calls o.GetLastDERPActivity if both o and
@@ -896,7 +899,7 @@ func (c *Client) GetReport(ctx context.Context, dm *tailcfg.DERPMap, opts *GetRe
 	// it's unnecessary.
 	captivePortalDone := syncs.ClosedChan()
 	captivePortalStop := func() {}
-	if !rs.incremental {
+	if !rs.incremental && !opts.SkipCaptivePortal {
 		// NOTE(andrew): we can't simply add this goroutine to the
 		// `NewWaitGroupChan` below, since we don't wait for that
 		// waitgroup to finish when exiting this function and thus get
@@ -1565,6 +1568,9 @@ func (rs *reportState) runProbe(ctx context.Context, dm *tailcfg.DERPMap, probe 
 	rs.inFlight[txID] = func(ipp netip.AddrPort) {
 		rs.addNodeLatency(node, ipp, time.Since(sent))
 		cancelSet() // abort other nodes in this set
+		if rs.opts.StopOnFirstUDP {
+			rs.stopProbes()
+		}
 	}
 	rs.mu.Unlock()
 
