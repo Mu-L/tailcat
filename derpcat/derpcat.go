@@ -27,6 +27,7 @@ import (
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/net/dns"
+	"tailscale.com/net/netcheck"
 	"tailscale.com/net/netmon"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/tsdial"
@@ -43,7 +44,9 @@ import (
 	"tailscale.com/wgengine/wgcfg"
 )
 
-// ConnBlob is the base64 encoded cbor of ConnInfo.
+var Verbose = false
+
+// ConnBlob is the base64 encoded cbor of [ConnInfo].
 type ConnBlob string
 
 type ConnInfo struct {
@@ -61,6 +64,8 @@ type ConnInfo struct {
 	// DERP servers. If set, Region may be omitted and the ConnBlob
 	// is shorter, at the cost of the client needing to fetch
 	// the derpmap from tailscale.com once at startup.
+	// If -1 (for use when saving a keypair to disk for reuse later), a region
+	// is selected automatically at startup based on latency.
 	RegionID int `cbor:"i,omitempty" json:",omitempty"`
 }
 
@@ -211,7 +216,7 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 	ns.ProcessLocalIPs = true
 	ns.ProcessSubnets = true
 	ns.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (handler func(net.Conn), intercept bool) {
-		logf("GetTCPHandlerForFlow(%v, %v) ...", src, dst)
+		logf("XXX GetTCPHandlerForFlow(%v, %v) ...", src, dst)
 		if dst.Addr() == srv.Addr() {
 			if srv.OnTCP == nil {
 				return nil, true // send RST
@@ -236,11 +241,25 @@ func NewServer(priv key.NodePrivate, logf logger.Logf, regs ...*tailcfg.DERPRegi
 	e.SetFilter(filter.NewAllowAllForTest(logf)) // TODO: trashy
 	dialer.UseNetstackForIP = func(ip netip.Addr) bool {
 		_, ok := e.PeerForIP(ip)
+		log.Printf("XXX useNetstackForIP(%v) = %v", ip, ok)
 		return ok
 	}
 	dialer.NetstackDialTCP = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		log.Printf("XXX NetstackDialTCP(%v) ...", dst)
 		return ns.DialContextTCP(ctx, dst)
 	}
+	dialer.NetstackDialUDP = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		// Note: don't just return ns.DialContextUDP or we'll return
+		// *gonet.UDPConn(nil) instead of a nil interface which trips up
+		// callers.
+		udpConn, err := ns.DialContextUDP(ctx, dst)
+		if err != nil {
+			return nil, err
+		}
+		return udpConn, nil
+	}
+
+	sys.Tun.Get().Start()
 
 	return srv, nil
 }
@@ -403,6 +422,52 @@ func (ci *ConnInfo) Expand(ctx context.Context, forServer bool) error {
 		return fmt.Errorf("fetching DERPMap for region %v, invalid JSON from %v: %w", ci.RegionID, req.URL, err)
 	}
 	if ci.RegionID == -1 {
+		// Shuffle each DERP region's nodes.
+		for _, r := range dm.Regions {
+			rand.Shuffle(len(r.Nodes), reflect.Swapper(r.Nodes))
+		}
+
+		nc := &netcheck.Client{
+			NetMon:  netmon.NewStatic(),
+			Verbose: Verbose,
+			Logf:    logger.Discard,
+		}
+		if Verbose {
+			nc.Logf = log.Printf
+		}
+		if err := nc.Standalone(ctx, ":0"); err != nil {
+			log.Fatalf("netcheck.Standalone: %v", err)
+		}
+		t0 := time.Now()
+		nr, err := nc.GetReport(ctx, &dm, &netcheck.GetReportOpts{
+			SkipCaptivePortal: true,
+			StopOnFirstUDP:    true,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to get netcheck report: %w", err)
+		}
+		if Verbose {
+			log.Printf("Got netcheck after %v: %v", time.Since(t0), logger.AsJSON(nr))
+		}
+
+		bestLatency := time.Hour
+		for rid, d := range nr.RegionLatency {
+			r, ok := dm.Regions[rid]
+			if !ok {
+				continue // shouldn't happen
+			}
+			if d < bestLatency {
+				bestLatency = d
+				ci.RegionID = 0
+				ci.Region = []*tailcfg.DERPRegion{r}
+			}
+		}
+		if ci.RegionID != -1 {
+			return nil
+		}
+
+		// Netcheck failed? Just pick something.
+
 		// Make a random order of the first 10 region IDs and return the first
 		// one we find that exists, ignoring what's close to the user. Avoid
 		// STUN, etc. Assume the server will filter things away based on our
@@ -726,8 +791,21 @@ func NewClient(logf logger.Logf, server ConnBlob, priv key.NodePrivate) (*Client
 		return ok
 	}
 	dialer.NetstackDialTCP = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		log.Printf("XXX client NetstackDialTCP(%v) ...", dst)
 		return ns.DialContextTCP(ctx, dst)
 	}
+	dialer.NetstackDialUDP = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		// Note: don't just return ns.DialContextUDP or we'll return
+		// *gonet.UDPConn(nil) instead of a nil interface which trips up
+		// callers.
+		udpConn, err := ns.DialContextUDP(ctx, dst)
+		if err != nil {
+			return nil, err
+		}
+		return udpConn, nil
+	}
+
+	sys.Tun.Get().Start()
 
 	return &Client{
 		ci:         ci,

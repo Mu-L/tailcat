@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -407,6 +408,7 @@ func (d *Dialer) UserDial(ctx context.Context, network, addr string) (net.Conn, 
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("XXX UserDial = %p, %v in it = %v", d.UseNetstackForIP, ipp.Addr(), d.UseNetstackForIP(ipp.Addr()))
 	if d.UseNetstackForIP != nil && d.UseNetstackForIP(ipp.Addr()) {
 		if d.NetstackDialTCP == nil || d.NetstackDialUDP == nil {
 			return nil, errors.New("Dialer not initialized correctly")

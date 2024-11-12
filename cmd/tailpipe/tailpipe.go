@@ -44,6 +44,7 @@ var (
 	flagKey     = flag.String("key", "", "'new' for an ephemeral one, '' for the 'default' key (if it exists), else a new key. Otherwise the path to a *.key.json or a name like 'foo' to read it from $CONFIG/tailpipe/keys/foo.key.json")
 	flagAllow   = flag.String("allow", "", "comma-separated list of public keys to allow access to the server")
 	flagVerbose = flag.Bool("verbose", false, "be verbose")
+	flagJSON    = flag.Bool("json", false, "output JSON")
 )
 
 func usage(err string) {
@@ -98,6 +99,9 @@ process:
 func main() {
 	flag.Usage = func() { usage("") }
 	flag.Parse()
+	if *flagVerbose {
+		derpcat.Verbose = true
+	}
 	args := flag.Args()
 	serverMode := len(args) == 0 || *flagServe != ""
 	if len(args) > 0 && serverMode {
@@ -181,13 +185,13 @@ func clientMode(logf logger.Logf, connStr, optDest string) {
 	priv := clientKey()
 	cl, err := derpcat.NewClient(logf, derpcat.ConnBlob(connStr), priv)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("derpcat.NewClient: %v", err)
 	}
 
 	var dial func(context.Context) (net.Conn, error)
 	switch {
 	case optDest == "":
-		dial = func(ctx context.Context) (net.Conn, error) { return cl.DialTCPPort(ctx, 0) }
+		dial = func(ctx context.Context) (net.Conn, error) { return cl.DialTCPPort(ctx, 1) }
 	case !strings.Contains(optDest, ":"):
 		port, err := strconv.ParseUint(optDest, 10, 16)
 		if err != nil {
@@ -203,7 +207,7 @@ func clientMode(logf logger.Logf, connStr, optDest string) {
 	}
 
 	if err := cl.Start(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("derpcat.Start: %v", err)
 	}
 	pi, err := cl.Ping(context.Background())
 	if err != nil {
@@ -215,9 +219,10 @@ func clientMode(logf logger.Logf, connStr, optDest string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	log.Printf("XXX Dialing %q ...", optDest)
 	c, err := dial(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Dial: %v", err)
 	}
 	rxErr := make(chan error, 1)
 	txErr := make(chan error, 1)
@@ -348,7 +353,6 @@ func server(logf logger.Logf) {
 			log.Fatalf("failed to stat default key: %v", err)
 		}
 	}
-	var connStr derpcat.ConnBlob
 	if *flagKey == "new" {
 		priv = key.NewNode()
 		ci = &derpcat.ConnInfo{RegionID: -1} // auto-detect
@@ -364,12 +368,12 @@ func server(logf logger.Logf) {
 		}
 		priv = conf.Private
 		ci = &conf.Public
-		connStr = ci.ConnBlob()
 	}
 	if reg == nil {
 		if err := ci.Expand(context.Background(), true); err != nil {
 			log.Fatalf("Expand: %v", err)
 		}
+
 		reg = ci.Region[0]
 		if *flagKey == "new" {
 			ci = &derpcat.ConnInfo{
@@ -377,10 +381,10 @@ func server(logf logger.Logf) {
 				RegionID:     reg.RegionID,
 			}
 		}
+		clearUnnecessaryRegionFields(reg)
+		fmt.Fprintf(os.Stderr, "# Selected bootstrap relay region %v, %v\n", reg.RegionID, reg.RegionName)
 	}
-	if connStr == "" {
-		connStr = ci.ConnBlob()
-	}
+	connStr := ci.ConnBlob()
 
 	s, err := derpcat.NewServer(priv, logf, reg)
 	if err != nil {
@@ -432,6 +436,7 @@ func server(logf logger.Logf) {
 	}
 
 	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
+		log.Printf("XXX OnTCP(%v) ...", port)
 		if port == 22 && services.Contains("no-auth-ssh") && tailPipeSSHEnabled {
 			return s.HandleTailscaleSSHConn
 		}
@@ -460,6 +465,9 @@ func server(logf logger.Logf) {
 		log.Fatalf("Server.Start: %v", err)
 	}
 	fmt.Fprintf(os.Stderr, "# Server listening at: %v\n", connStr)
+	if *flagJSON {
+		json.NewEncoder(os.Stdout).Encode(map[string]string{"listenAddr": string(connStr)})
+	}
 	if v := os.Getenv("DC_ADDR_FILE"); v != "" {
 		if err := os.WriteFile(v, []byte(connStr), 0600); err != nil {
 			log.Fatal(err)
@@ -601,7 +609,7 @@ func genKey() {
 		key          = fs.String("key", "default", "key path (if it contains a slash) or name (written to "+confDir+"/tailpipe/keys/<name>.private.json)")
 		force        = fs.Bool("force", false, "force overwrite of existing key")
 		delete       = fs.Bool("delete", false, "delete named key instead of generating it; only valid if key doesn't contain slashes")
-		region       = fs.String("region", "1", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s).")
+		region       = fs.String("region", "auto", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s). If 'auto', one is picked based on latency. If 'list', list all regions.")
 		embedDERPMap = fs.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
 	)
 	fs.Parse(args[1:]) // stripping off "genkey"
@@ -626,14 +634,16 @@ func genKey() {
 		}
 	}
 	if _, err := os.Stat(*key); err == nil {
-		if !*force && *region != "list" {
+		if !*force && *region != "list" && *region != "auto" {
 			log.Fatalf("%v already exists; use --force to overwrite", *key)
 		}
 	}
 
 	priv := derpcat.NewPrivateKey()
 	var match string
-	if n, err := strconv.Atoi(*region); err == nil {
+	if *region == "auto" {
+		priv.Public.RegionID = -1
+	} else if n, err := strconv.Atoi(*region); err == nil {
 		priv.Public.RegionID = n
 	} else if strings.Contains(*region, ".") {
 		hosts := strings.Split(*region, ",")
@@ -721,4 +731,18 @@ func findRegionIDFromSubstring(dm *tailcfg.DERPMap, s string) (regionID int) {
 		}
 	}
 	return 0
+}
+
+func clearUnnecessaryRegionFields(r *tailcfg.DERPRegion) {
+	r.Latitude = 0
+	r.Longitude = 0
+	r.RegionCode = ""
+	if len(r.Nodes) > 1 {
+		r.Nodes = r.Nodes[:1]
+	}
+	for _, n := range r.Nodes {
+		n.CanPort80 = false
+		n.Name = ""
+		n.RegionID = 0
+	}
 }

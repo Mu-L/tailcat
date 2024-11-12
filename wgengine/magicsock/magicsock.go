@@ -13,6 +13,7 @@ import (
 	"expvar"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"reflect"
@@ -1266,6 +1267,7 @@ func (c *Conn) networkDown() bool { return !c.networkUp.Load() }
 //
 // See https://pkg.go.dev/golang.zx2c4.com/wireguard/conn#Bind.Send
 func (c *Conn) Send(buffs [][]byte, ep conn.Endpoint) (err error) {
+	log.Printf("XXX magicsock.Conn.Send %v to %v", len(buffs), ep)
 	n := int64(len(buffs))
 	defer func() {
 		if err != nil {
