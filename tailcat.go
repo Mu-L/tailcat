@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/rand"
 	"net"
 	"net/http"
@@ -729,26 +730,18 @@ func (ci *ConnInfo) Expand(ctx context.Context, opts ...any) error {
 			return nil
 		}
 
-		// Netcheck failed? Just pick something.
-
-		// Make a random order of the first 10 region IDs and return the first
-		// one we find that exists, ignoring what's close to the user. Avoid
-		// STUN, etc. Assume the server will filter things away based on our
-		// IP when the Tailcat-Mode == "server".
-		regIDs := make([]int, 10)
-		for i := range regIDs {
-			regIDs[i] = i + 1
+		// Netcheck failed? Just pick a random region from the map,
+		// ignoring what's close to the user. Assume the server
+		// filtered the map based on our IP when the Tailcat-Mode
+		// header was "server".
+		regIDs := slices.Sorted(maps.Keys(dm.Regions))
+		if len(regIDs) == 0 {
+			return errors.New("failed to auto-detect any regions")
 		}
-		rand.Shuffle(len(regIDs), reflect.Swapper(regIDs))
-
-		for _, regID := range regIDs {
-			if r, ok := dm.Regions[regID]; ok {
-				ci.RegionID = 0
-				ci.Region = append(ci.Region, r)
-				return nil
-			}
-		}
-		return errors.New("failed to auto-detect any regions")
+		regID := regIDs[rand.Intn(len(regIDs))]
+		ci.RegionID = 0
+		ci.Region = append(ci.Region, dm.Regions[regID])
+		return nil
 	}
 	r, ok := dm.Regions[ci.RegionID]
 	if !ok {

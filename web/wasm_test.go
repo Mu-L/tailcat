@@ -115,6 +115,33 @@ var buildWasm = sync.OnceValues(func() (string, error) {
 	return out, nil
 })
 
+// renumberRegion returns a copy of dm with its single region 1
+// renumbered to newID. Tests pass an arbitrary ID (at most the DERP
+// maximum of 999) so that the browser's region auto-selection can't
+// get away with assuming small region IDs exist, as it once did.
+func renumberRegion(t *testing.T, dm *tailcfg.DERPMap, newID int) *tailcfg.DERPMap {
+	t.Helper()
+	j, err := json.Marshal(dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := new(tailcfg.DERPMap)
+	if err := json.Unmarshal(j, cp); err != nil {
+		t.Fatal(err)
+	}
+	reg, ok := cp.Regions[1]
+	if !ok {
+		t.Fatalf("no region 1 in test DERP map")
+	}
+	delete(cp.Regions, 1)
+	reg.RegionID = newID
+	for _, n := range reg.Nodes {
+		n.RegionID = newID
+	}
+	cp.Regions[newID] = reg
+	return cp
+}
+
 // newWebServer serves the web app (test cwd is the web/ directory)
 // plus the freshly built wasm, the Go toolchain's wasm_exec.js, and a
 // same-origin /derpmap.json describing the local test DERP server.
@@ -205,7 +232,7 @@ func checkPageErrors(t *testing.T, runCtx context.Context) {
 func TestBrowserReceives(t *testing.T) {
 	bin := preflight(t)
 	dm := integration.RunDERPAndSTUN(t, mkLogf(t, "derpstun"), "127.0.0.1")
-	srv := newWebServer(t, dm)
+	srv := newWebServer(t, renumberRegion(t, dm, 909))
 
 	browserCtx := launchChrome(t, bin)
 	runCtx, cancelRun := context.WithTimeout(browserCtx, 120*time.Second)
