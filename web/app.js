@@ -35,13 +35,42 @@ async function sha256Hex(bytes) {
   return hex(await crypto.subtle.digest("SHA-256", bytes));
 }
 
+// fetchWithProgress fetches the wasm, updating the page's progress
+// bar as (decompressed) bytes arrive. The server advertises the
+// uncompressed size in a header since Content-Length is the
+// compressed size.
+async function fetchWithProgress(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`fetching ${url}: ${resp.status}`);
+  }
+  const total = Number(resp.headers.get("X-Uncompressed-Size")) ||
+    Number(resp.headers.get("Content-Length")) || 0;
+  const bar = $("load-progress");
+  let loaded = 0;
+  const counted = resp.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      loaded += chunk.byteLength;
+      if (total > 0) {
+        bar.value = loaded / total;
+        setStatus(`Loading WebAssembly… ${(loaded / (1 << 20)).toFixed(1)} / ${(total / (1 << 20)).toFixed(1)} MB`);
+      } else {
+        setStatus(`Loading WebAssembly… ${(loaded / (1 << 20)).toFixed(1)} MB`);
+      }
+      controller.enqueue(chunk);
+    },
+  }));
+  return new Response(counted, { headers: { "Content-Type": "application/wasm" } });
+}
+
 // Boot the wasm module.
 const ready = new Promise((resolve) => { globalThis.onTailcatReady = resolve; });
 const go = new Go();
-WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
+WebAssembly.instantiateStreaming(fetchWithProgress("main.wasm"), go.importObject)
   .then(({ instance }) => go.run(instance));
 await ready;
 window.tcTest.ready = true;
+$("load-progress").remove();
 setStatus("Ready.");
 $("listen-btn").disabled = false;
 $("send-btn").disabled = false;

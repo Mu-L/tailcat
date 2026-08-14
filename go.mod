@@ -15,6 +15,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
 	github.com/chromedp/chromedp v0.16.0
 	github.com/creack/pty v1.1.24
+	github.com/klauspost/compress v1.18.5
 	github.com/tailscale/gliderssh v0.3.4-0.20260716005906-1a0f895faf28
 	github.com/u-root/u-root v0.14.0
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
@@ -74,7 +75,6 @@ require (
 	github.com/jellydator/ttlcache/v3 v3.1.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/kortschak/wol v0.0.0-20200729010619-da482cc4850a // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/mdlayher/genetlink v1.3.2 // indirect

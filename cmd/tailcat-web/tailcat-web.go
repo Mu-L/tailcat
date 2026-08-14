@@ -9,14 +9,18 @@
 package main
 
 import (
+	"compress/gzip"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/tailscale/tailcat"
 	"github.com/tailscale/tailcat/internal/wasmbuild"
 )
@@ -48,6 +52,13 @@ func main() {
 	}
 	log.Printf("built wasm in %v", time.Since(t0).Round(time.Millisecond))
 
+	t0 = time.Now()
+	wasmSize, err := compressWasm(wasmPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("compressed wasm in %v", time.Since(t0).Round(time.Millisecond))
+
 	wasmExecJS, err := wasmbuild.WasmExecJS()
 	if err != nil {
 		log.Fatal(err)
@@ -64,7 +75,23 @@ func main() {
 		http.ServeFile(w, r, wasmExecJS)
 	})
 	mux.HandleFunc("/main.wasm", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, wasmPath)
+		// The wasm binary is tens of MB; serve it precompressed.
+		// Content-Type is set before ServeFile so it isn't sniffed
+		// from the compressed file's extension.
+		w.Header().Set("Content-Type", "application/wasm")
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Set("X-Uncompressed-Size", fmt.Sprint(wasmSize))
+		ae := r.Header.Get("Accept-Encoding")
+		switch {
+		case strings.Contains(ae, "zstd"):
+			w.Header().Set("Content-Encoding", "zstd")
+			http.ServeFile(w, r, wasmPath+".zst")
+		case strings.Contains(ae, "gzip"):
+			w.Header().Set("Content-Encoding", "gzip")
+			http.ServeFile(w, r, wasmPath+".gz")
+		default:
+			http.ServeFile(w, r, wasmPath)
+		}
 	})
 	mux.HandleFunc("/derpmap.json", func(w http.ResponseWriter, r *http.Request) {
 		req, err := http.NewRequestWithContext(r.Context(), "GET", *flagDERPMapURL, nil)
@@ -86,4 +113,51 @@ func main() {
 
 	log.Printf("serving tailcat web app at http://%s/", *flagListen)
 	log.Fatal(http.ListenAndServe(*flagListen, mux))
+}
+
+// compressWasm writes path.zst and path.gz next to path and returns
+// the uncompressed size.
+func compressWasm(path string) (size int64, err error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer src.Close()
+	fi, err := src.Stat()
+	if err != nil {
+		return 0, err
+	}
+
+	zf, err := os.Create(path + ".zst")
+	if err != nil {
+		return 0, err
+	}
+	defer zf.Close()
+	zw, err := zstd.NewWriter(zf)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := io.Copy(zw, src); err != nil {
+		return 0, err
+	}
+	if err := zw.Close(); err != nil {
+		return 0, err
+	}
+
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	gf, err := os.Create(path + ".gz")
+	if err != nil {
+		return 0, err
+	}
+	defer gf.Close()
+	gw := gzip.NewWriter(gf)
+	if _, err := io.Copy(gw, src); err != nil {
+		return 0, err
+	}
+	if err := gw.Close(); err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
 }
