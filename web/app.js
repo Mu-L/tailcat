@@ -44,8 +44,12 @@ async function fetchWithProgress(url) {
   if (!resp.ok) {
     throw new Error(`fetching ${url}: ${resp.status}`);
   }
+  // The body stream yields decompressed bytes, so progress is
+  // tracked against the uncompressed size, but the size shown to the
+  // user is Content-Length: what actually crosses the wire.
   const total = Number(resp.headers.get("X-Uncompressed-Size")) ||
     Number(resp.headers.get("Content-Length")) || 0;
+  const wireMB = ((Number(resp.headers.get("Content-Length")) || 0) / (1 << 20)).toFixed(1);
   const bar = $("load-progress");
   let loaded = 0;
   const counted = resp.body.pipeThrough(new TransformStream({
@@ -53,9 +57,10 @@ async function fetchWithProgress(url) {
       loaded += chunk.byteLength;
       if (total > 0) {
         bar.value = loaded / total;
-        setStatus(`Loading WebAssembly… ${(loaded / (1 << 20)).toFixed(1)} / ${(total / (1 << 20)).toFixed(1)} MB`);
+        const pct = Math.min(100, Math.floor(100 * loaded / total));
+        setStatus(`Loading WebAssembly… ${pct}% of ${wireMB} MB`);
       } else {
-        setStatus(`Loading WebAssembly… ${(loaded / (1 << 20)).toFixed(1)} MB`);
+        setStatus(`Loading WebAssembly…`);
       }
       controller.enqueue(chunk);
     },
