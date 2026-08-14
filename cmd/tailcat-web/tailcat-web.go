@@ -77,21 +77,27 @@ func main() {
 	mux.HandleFunc("/main.wasm", func(w http.ResponseWriter, r *http.Request) {
 		// The wasm binary is tens of MB; serve it precompressed.
 		// Content-Type is set before ServeFile so it isn't sniffed
-		// from the compressed file's extension.
+		// from the compressed file's extension. The transfer size
+		// goes in X-Compressed-Size because reverse proxies may drop
+		// Content-Length, and the page can't compute it itself: its
+		// body stream sees only decompressed bytes.
 		w.Header().Set("Content-Type", "application/wasm")
 		w.Header().Set("Vary", "Accept-Encoding")
 		w.Header().Set("X-Uncompressed-Size", fmt.Sprint(wasmSize))
+		path := wasmPath
 		ae := r.Header.Get("Accept-Encoding")
 		switch {
 		case strings.Contains(ae, "zstd"):
 			w.Header().Set("Content-Encoding", "zstd")
-			http.ServeFile(w, r, wasmPath+".zst")
+			path += ".zst"
 		case strings.Contains(ae, "gzip"):
 			w.Header().Set("Content-Encoding", "gzip")
-			http.ServeFile(w, r, wasmPath+".gz")
-		default:
-			http.ServeFile(w, r, wasmPath)
+			path += ".gz"
 		}
+		if fi, err := os.Stat(path); err == nil {
+			w.Header().Set("X-Compressed-Size", fmt.Sprint(fi.Size()))
+		}
+		http.ServeFile(w, r, path)
 	})
 	mux.HandleFunc("/derpmap.json", func(w http.ResponseWriter, r *http.Request) {
 		req, err := http.NewRequestWithContext(r.Context(), "GET", *flagDERPMapURL, nil)

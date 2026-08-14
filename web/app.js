@@ -49,7 +49,9 @@ async function fetchWithProgress(url) {
   // user is Content-Length: what actually crosses the wire.
   const total = Number(resp.headers.get("X-Uncompressed-Size")) ||
     Number(resp.headers.get("Content-Length")) || 0;
-  const wireMB = ((Number(resp.headers.get("Content-Length")) || 0) / (1 << 20)).toFixed(1);
+  const wireBytes = Number(resp.headers.get("X-Compressed-Size")) ||
+    Number(resp.headers.get("Content-Length")) || 0;
+  const ofMB = wireBytes > 0 ? ` of ${(wireBytes / (1 << 20)).toFixed(1)} MB` : "";
   const bar = $("load-progress");
   let loaded = 0;
   const counted = resp.body.pipeThrough(new TransformStream({
@@ -58,7 +60,7 @@ async function fetchWithProgress(url) {
       if (total > 0) {
         bar.value = loaded / total;
         const pct = Math.min(100, Math.floor(100 * loaded / total));
-        setStatus(`Loading WebAssembly… ${pct}% of ${wireMB} MB`);
+        setStatus(`Loading WebAssembly… ${pct}%${ofMB}`);
       } else {
         setStatus(`Loading WebAssembly…`);
       }
