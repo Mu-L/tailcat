@@ -6,14 +6,24 @@
 package main
 
 import (
-	"os"
+	"context"
+	"errors"
 
-	"tailscale.com/types/logger"
+	"github.com/peterbourgon/ff/v4"
 )
 
 const tailCatSSHEnabled = false
 
-func clientSSHMode(logf logger.Logf) {
-	logf("ssh support not compiled in")
-	os.Exit(1)
+// sshCommand returns a stub "tailcat ssh" subcommand that only
+// reports that SSH support was omitted from this build.
+func sshCommand(parent *ff.FlagSet) *ff.Command {
+	return &ff.Command{
+		Name:      "ssh",
+		Usage:     "tailcat ssh",
+		ShortHelp: "(SSH support not included in this build)",
+		Flags:     ff.NewFlagSet("ssh").SetParent(parent),
+		Exec: func(ctx context.Context, args []string) error {
+			return errors.New("ssh support not compiled in")
+		},
+	}
 }

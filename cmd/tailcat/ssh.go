@@ -6,9 +6,9 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"flag"
 	"fmt"
 	"log"
 	"net/netip"
@@ -17,26 +17,34 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/peterbourgon/ff/v4"
 	"github.com/tailscale/tailcat"
-	"tailscale.com/types/logger"
 )
 
 const tailCatSSHEnabled = true
 
-func clientSSHMode(logf logger.Logf) {
-	args := flag.Args()
-	args = args[1:] // trim off "ssh"
-	if len(args) == 0 {
-		usage("tailcat ssh [-p <port|ip:port>] [user@]<addrblob> [command ...]")
+// sshCommand returns the "tailcat ssh" subcommand, with parent as the
+// parent flag set for the global flags.
+func sshCommand(parent *ff.FlagSet) *ff.Command {
+	fs := ff.NewFlagSet("ssh").SetParent(parent)
+	port := fs.StringShort('p', "22", "port number, or ip:port to reach via the server's exit node; a bare IP means port 22 on it")
+	return &ff.Command{
+		Name:      "ssh",
+		Usage:     "tailcat ssh [-p <port|ip:port>] [user@]<addrblob> [<command> [args...]]",
+		ShortHelp: "connect the system ssh client through a tailcat server",
+		Flags:     fs,
+		Exec: func(ctx context.Context, args []string) error {
+			return clientSSHMode(*port, args)
+		},
 	}
+}
 
-	portOrIPPort := "22"
-	if len(args) >= 2 && args[0] == "-p" {
-		portOrIPPort = args[1]
-		args = args[2:]
-		if ip, err := netip.ParseAddr(portOrIPPort); err == nil {
-			portOrIPPort = netip.AddrPortFrom(ip, 22).String()
-		}
+func clientSSHMode(portOrIPPort string, args []string) error {
+	if len(args) == 0 {
+		return usagef("ssh requires a [user@]<addrblob> destination argument")
+	}
+	if ip, err := netip.ParseAddr(portOrIPPort); err == nil {
+		portOrIPPort = netip.AddrPortFrom(ip, 22).String()
 	}
 	dst := args[0] // either a derpaddr alone or "user@<derpaddr>"
 	cmdArgs := args[1:]
@@ -70,6 +78,7 @@ func clientSSHMode(logf logger.Logf) {
 	argv = append(argv, cmdArgs...)
 	err = execSSH(sshExe, argv)
 	log.Fatalf("failed to run ssh: %v", err)
+	return nil
 }
 
 // sshProxyCommand returns the command passed to OpenSSH to connect the SSH

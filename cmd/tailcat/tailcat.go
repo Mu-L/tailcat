@@ -9,7 +9,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -31,6 +30,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/peterbourgon/ff/v4"
+	"github.com/peterbourgon/ff/v4/ffhelp"
 	"github.com/tailscale/tailcat"
 	"go4.org/mem"
 	xmaps "golang.org/x/exp/maps"
@@ -46,26 +47,179 @@ import (
 	"tailscale.com/wgengine/filter"
 )
 
+// The global flags, shared by all subcommands. They're set by
+// newRootCommand, which must run before any of them are dereferenced.
 var (
-	flagServe       = flag.String("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit-node' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it listens only on port 0 and writes to stdout.")
-	flagKey         = flag.String("key", "", "'new' for an ephemeral key. If empty, the default saved key is used if it exists ('default' in server mode, 'client-default' in client modes; see genkey), else an ephemeral key. Otherwise the path to a *.private.json or a name like 'foo' to read it from $CONFIG/tailcat/keys/foo.private.json")
-	flagAllow       = flag.String("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
-	flagVerbose     = flag.Bool("verbose", false, "be verbose")
-	flagReadme      = flag.Bool("readme", false, "print the tailcat README (documentation with usage examples) and exit")
-	flagVersion     = flag.Bool("version", false, "print the tailcat version and exit")
-	flagFullAddress = flag.Bool("full-address", false, "in server mode, print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
-	flagJSON        = flag.Bool("json", false, "in server mode, write {\"listenAddr\": ...} JSON to stdout")
-
-	flagDERPMapURL = flag.String("derpmap-url", tailcat.DefaultDERPMapURL, "URL of the JSON DERP map used to resolve or auto-select a DERP region")
+	flagServe       *string
+	flagKey         *string
+	flagAllow       *string
+	flagVerbose     *bool
+	flagVersion     *bool
+	flagFullAddress *bool
+	flagJSON        *bool
+	flagDERPMapURL  *string
 )
 
-func usage(err string) {
-	if err != "" {
-		fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
-	}
-	fmt.Fprintf(os.Stderr, `Usage:
+// The genkey subcommand's flags, likewise set by newRootCommand.
+var (
+	genkeyFS           *ff.FlagSet
+	genkeyKey          *string
+	genkeyClient       *bool
+	genkeyForce        *bool
+	genkeyDelete       *bool
+	genkeyList         *bool
+	genkeyRegion       *string
+	genkeyFixedRegion  *bool
+	genkeyEmbedDERPMap *bool
+)
 
-Server mode, accept one connection (any port), write to stdout:
+// getLogf returns the logger implied by the --verbose flag.
+func getLogf() logger.Logf {
+	if *flagVerbose {
+		return log.Printf
+	}
+	return logger.Discard
+}
+
+// newRootCommand builds the tailcat command tree. It must only be
+// called once per process outside of tests, as it resets the
+// package-level flag value pointers.
+func newRootCommand() *ff.Command {
+	rootFS := ff.NewFlagSet("tailcat")
+	flagServe = rootFS.StringLong("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit-node' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it accepts a single connection on any port, writes it to stdout, and exits.")
+	flagKey = rootFS.StringLong("key", "", "'new' for an ephemeral key. If empty, the default saved key is used if it exists ('default' in server mode, 'client-default' in client modes; see genkey), else an ephemeral key. Otherwise the path to a *.private.json or a name like 'foo' to read it from $CONFIG/tailcat/keys/foo.private.json")
+	flagAllow = rootFS.StringLong("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
+	flagVerbose = rootFS.BoolLong("verbose", "be verbose")
+	flagVersion = rootFS.BoolLong("version", "print the tailcat version and exit")
+	flagFullAddress = rootFS.BoolLong("full-address", "in server mode, print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
+	flagJSON = rootFS.BoolLong("json", "in server mode, write {\"listenAddr\": ...} JSON to stdout")
+	flagDERPMapURL = rootFS.StringLong("derpmap-url", tailcat.DefaultDERPMapURL, "URL of the JSON DERP map used to resolve or auto-select a DERP region")
+
+	pingFS := ff.NewFlagSet("ping").SetParent(rootFS)
+	pingUntilDirect := pingFS.BoolLong("until-direct", "keep pinging until a pong arrives over a direct (non-DERP) path; exit non-zero if that doesn't happen before --timeout")
+	pingTimeout := pingFS.DurationLong("timeout", 10*time.Second, "give up after this long")
+
+	socksFS := ff.NewFlagSet("socks").SetParent(rootFS)
+	socksListen := socksFS.StringLong("listen", "127.0.0.1:0", "SOCKS5 proxy listen [address]:port; a bare port means localhost, a bare address means an OS-assigned port")
+
+	keysDir := "$CONFIG/tailcat/keys"
+	if confDir, err := os.UserConfigDir(); err == nil {
+		keysDir = filepath.Join(confDir, "tailcat", "keys")
+	}
+	genkeyFS = ff.NewFlagSet("genkey").SetParent(rootFS)
+	genkeyKey = genkeyFS.StringLong("key", "", "key path (if it contains a slash) or name (written to "+keysDir+"/<name>.private.json). Required. The name 'default' is magic: server mode loads it automatically once it exists. Likewise 'client-default' for client modes.")
+	genkeyClient = genkeyFS.BoolLong("client", "generate a client identity key (no DERP region) and print its public key, for use with servers' --allow lists. The 'client-default' key is used automatically by client modes.")
+	genkeyForce = genkeyFS.BoolLong("force", "force overwrite of existing key")
+	genkeyDelete = genkeyFS.BoolLong("delete", "delete the key named by --key instead of generating one; --key is required and must be a name, not a path")
+	genkeyList = genkeyFS.BoolLong("list", "list saved key names and exit")
+	genkeyRegion = genkeyFS.StringLong("region", "auto", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s). If 'auto', one is picked based on latency at each server startup. If 'list', list all regions.")
+	genkeyFixedRegion = genkeyFS.BoolLong("fixed-region", "discover the nearest DERP region once, now, and bake it into the key and token, so future server startups (and clients) use it without re-probing")
+	genkeyEmbedDERPMap = genkeyFS.BoolLong("embed-derp-map", "embed the DERP map nodes in the connection string")
+
+	return &ff.Command{
+		Name:      "tailcat",
+		Usage:     "tailcat [flags] [<subcommand> [flags]] [args...]",
+		ShortHelp: "securely pipe or serve network connections over Tailscale's data plane (WireGuard®, NAT traversal), without Tailscale's control plane (central server, accounts)",
+		LongHelp:  rootLongHelp,
+		Flags:     rootFS,
+		Subcommands: []*ff.Command{
+			{
+				Name:      "ping",
+				Usage:     "tailcat ping [--until-direct] [--timeout=10s] <addrblob>",
+				ShortHelp: "ping a server, reporting DERP or direct paths",
+				Flags:     pingFS,
+				Exec: func(ctx context.Context, args []string) error {
+					return clientPingMode(getLogf(), *pingUntilDirect, *pingTimeout, args)
+				},
+			},
+			{
+				Name:      "socks",
+				Usage:     "tailcat socks [--listen=<addr:port>] [<addrblob>] [<cmd> [args...]]",
+				ShortHelp: "run a SOCKS5 proxy that dials tailcat servers",
+				Flags:     socksFS,
+				Exec: func(ctx context.Context, args []string) error {
+					return clientSOCKSMode(getLogf(), *socksListen, args)
+				},
+			},
+			sshCommand(rootFS),
+			{
+				Name:      "parse",
+				Usage:     "tailcat parse <addrblob>",
+				ShortHelp: "decode an address blob and print its fields as JSON",
+				Exec: func(ctx context.Context, args []string) error {
+					return clientParseMode(args)
+				},
+			},
+			{
+				Name:      "resolve",
+				Usage:     "tailcat resolve <addrblob>",
+				ShortHelp: "expand a short address blob to embed its DERP server info",
+				Exec: func(ctx context.Context, args []string) error {
+					return clientResolveMode(args)
+				},
+			},
+			{
+				Name:      "genkey",
+				Usage:     "tailcat genkey --key=<name> [--client] [--force] [--list] [--delete]",
+				ShortHelp: "generate, list, or delete saved keys",
+				Flags:     genkeyFS,
+				Exec: func(ctx context.Context, args []string) error {
+					return genKey(args)
+				},
+			},
+			{
+				Name:      "printpub",
+				Usage:     "tailcat printpub",
+				ShortHelp: "print the public key of the client key that would be used",
+				Exec: func(ctx context.Context, args []string) error {
+					fmt.Println(clientKey().Public().String())
+					return nil
+				},
+			},
+			{
+				Name:      "version",
+				Usage:     "tailcat version",
+				ShortHelp: "print the tailcat version (like --version)",
+				Exec: func(ctx context.Context, args []string) error {
+					fmt.Println(versionString())
+					return nil
+				},
+			},
+			{
+				Name:      "readme",
+				Usage:     "tailcat readme",
+				ShortHelp: "print the tailcat README (documentation with usage examples)",
+				Exec: func(ctx context.Context, args []string) error {
+					os.Stdout.WriteString(tailcat.README)
+					return nil
+				},
+			},
+		},
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 && args[0] == "help" {
+				return ff.ErrHelp
+			}
+			serverMode := len(args) == 0 || *flagServe != ""
+			if len(args) > 0 && serverMode {
+				return usagef("no positional arguments are valid along with --serve")
+			}
+			if serverMode {
+				server(getLogf())
+				return nil
+			}
+			if len(args) > 2 {
+				return usagef("too many arguments; client mode takes <addrblob> [<port>]")
+			}
+			var dst string
+			if len(args) == 2 {
+				dst = args[1]
+			}
+			return clientMode(getLogf(), string(addrBlobArg(args[0])), dst)
+		},
+	}
+}
+
+const rootLongHelp = `Server mode, accept one connection (any port), write to stdout:
 
 	tailcat
 
@@ -86,7 +240,7 @@ Server mode, exit node (clients can reach the server's whole network):
 
 	tailcat --serve=exit-node
 
-Client mode, to default port 0 for stdin/stdout pipe:
+Client mode, to default port 1 for stdin/stdout pipe:
 
 	echo hello | tailcat <addrblob>
 
@@ -141,15 +295,16 @@ Print the public key of the client key that would be used (see --key):
 	tailcat printpub
 
 Generate and save a persistent server key and print its address blob
-(run "tailcat genkey --help" for its flags):
+(run "tailcat genkey --help" for its flags). The key name "default"
+is magic: server mode uses it automatically once it exists:
 
-	tailcat genkey [--key=<name>] [--force]
+	tailcat genkey --key=default
 
 Generate and save a persistent client key and print its public key,
 for use in a server's --allow list. Client modes automatically use
 the key named "client-default" when it exists:
 
-	tailcat genkey --client
+	tailcat genkey --client --key=client-default
 
 List or delete saved keys:
 
@@ -158,25 +313,13 @@ List or delete saved keys:
 
 Print the full documentation (the project README) with more examples:
 
-	tailcat --readme
+	tailcat readme
 
 Environment:
 
 	TAILCAT_ADDR_FILE: in server mode, write the address blob to the
 	given file path or, with a "tcp:" prefix, send it to that TCP
-	address.
-
-Flags:
-
-`)
-	// Print the flag defaults with double hyphens (Go's single-hyphen
-	// style weirds people out, and the flag package accepts both).
-	var b strings.Builder
-	flag.CommandLine.SetOutput(&b)
-	flag.PrintDefaults()
-	os.Stderr.WriteString(strings.ReplaceAll("\n"+b.String(), "\n  -", "\n  --")[1:])
-	os.Exit(1)
-}
+	address.`
 
 // version is set via -ldflags by GoReleaser at release time.
 // It is empty for go-install and plain go-build builds.
@@ -194,57 +337,53 @@ func versionString() string {
 	return "unknown"
 }
 
+// usageError is an error caused by bad command line usage, as opposed
+// to a failure doing the requested work. main prints the selected
+// command's full help text along with it.
+type usageError struct{ error }
+
+// usagef returns a usageError whose message is the given
+// fmt.Sprintf-style arguments.
+func usagef(format string, args ...any) error {
+	return usageError{fmt.Errorf(format, args...)}
+}
+
 func main() {
-	flag.Usage = func() { usage("") }
-	flag.Parse()
-	if *flagReadme {
-		os.Stdout.WriteString(tailcat.README)
-		return
-	}
-	if *flagVersion {
-		fmt.Println(versionString())
-		return
-	}
-	if *flagVerbose {
-		tailcat.Verbose = true
-	}
-	args := flag.Args()
-	serverMode := len(args) == 0 || *flagServe != ""
-	if len(args) > 0 && serverMode {
-		usage("No positional arguments are valid along with --serve")
-	}
-	var logf logger.Logf = logger.Discard
-	if *flagVerbose {
-		logf = log.Printf
-	}
-	if serverMode {
-		server(logf)
-		return
-	}
-	switch args[0] {
-	case "help":
-		usage("")
-	case "ping":
-		clientPingMode(logf)
-	case "socks":
-		clientSOCKSMode(logf)
-	case "ssh":
-		clientSSHMode(logf)
-	case "parse":
-		clientParseMode(logf)
-	case "resolve":
-		clientResolveMode()
-	case "genkey":
-		genKey()
-	case "printpub":
-		fmt.Println(clientKey().Public().String())
-	default:
-		var dst string
-		if len(args) == 2 {
-			dst = args[1]
+	root := newRootCommand()
+	err := root.Parse(os.Args[1:])
+	if err == nil {
+		// The --version flag short-circuits everything else,
+		// including subcommand dispatch.
+		if *flagVersion {
+			fmt.Println(versionString())
+			return
 		}
-		clientMode(logf, string(addrBlobArg(args[0])), dst)
+		if *flagVerbose {
+			tailcat.Verbose = true
+		}
+		err = root.Run(context.Background())
 	}
+	if err == nil {
+		return
+	}
+	if errors.Is(err, ff.ErrHelp) {
+		// ffhelp.Command renders help for the subcommand selected
+		// during the parse, or for the root command if none was.
+		ffhelp.Command(root).WriteTo(os.Stderr)
+		os.Exit(0)
+	}
+	// Usage errors (including unknown flags) get the same help text
+	// as "tailcat <cmd> --help", with the error last, where it's
+	// visible under the scrollback.
+	var ue usageError
+	if errors.As(err, &ue) || errors.Is(err, ff.ErrUnknownFlag) {
+		ffhelp.Command(root).WriteTo(os.Stderr)
+		fmt.Fprintln(os.Stderr)
+	}
+	// No "tailcat:" prefix here: ff's parse errors already carry the
+	// command name, and exec errors read fine bare.
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
 }
 
 // addrBlobArg interprets a CLI destination argument as either a
@@ -365,26 +504,22 @@ func (c derpMapCache) Put(url string, data []byte, etag string) error {
 	return os.WriteFile(etagPath, []byte(etag), 0644)
 }
 
-func clientPingMode(logf logger.Logf) {
-	fs := flag.NewFlagSet("ping", flag.ExitOnError)
-	untilDirect := fs.Bool("until-direct", false, "keep pinging until a pong arrives over a direct (non-DERP) path; exit non-zero if that doesn't happen before --timeout")
-	timeout := fs.Duration("timeout", 10*time.Second, "give up after this long")
-	fs.Parse(flag.Args()[1:]) // stripping off "ping"
-	if len(fs.Args()) != 1 {
-		usage("tailcat ping [--until-direct] [--timeout=10s] <addrblob>")
+func clientPingMode(logf logger.Logf, untilDirect bool, timeout time.Duration, args []string) error {
+	if len(args) != 1 {
+		return usagef("ping requires one <addrblob> argument")
 	}
-	cl := newClient(logf, addrBlobArg(fs.Args()[0]), clientKey())
+	cl := newClient(logf, addrBlobArg(args[0]), clientKey())
 	defer cl.Close()
 
-	deadline := time.Now().Add(*timeout)
+	deadline := time.Now().Add(timeout)
 	for {
 		t0 := time.Now()
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		res, err := cl.DiscoPing(ctx)
 		cancel()
 		if err != nil {
-			if *untilDirect && errors.Is(err, context.DeadlineExceeded) {
-				log.Fatalf("no direct path to the server after %v", *timeout)
+			if untilDirect && errors.Is(err, context.DeadlineExceeded) {
+				log.Fatalf("no direct path to the server after %v", timeout)
 			}
 			log.Fatalf("ping: %v", err)
 		}
@@ -395,17 +530,17 @@ func clientPingMode(logf logger.Logf) {
 			via = fmt.Sprintf("DERP(%v)", cmp.Or(res.DERPRegionCode, res.DERPRegionID.String()))
 		}
 		fmt.Printf("pong in %v via %v\n", latency, via)
-		if direct || !*untilDirect {
-			return
+		if direct || !untilDirect {
+			return nil
 		}
 		if time.Until(deadline) < time.Second/2 {
-			log.Fatalf("no direct path to the server after %v", *timeout)
+			log.Fatalf("no direct path to the server after %v", timeout)
 		}
 		time.Sleep(max(0, time.Second-time.Since(t0)))
 	}
 }
 
-func clientMode(logf logger.Logf, connStr, optDest string) {
+func clientMode(logf logger.Logf, connStr, optDest string) error {
 	cl := newClient(logf, tailcat.ConnBlob(connStr), clientKey())
 
 	var dial func(context.Context) (net.Conn, error)
@@ -415,13 +550,13 @@ func clientMode(logf logger.Logf, connStr, optDest string) {
 	case !strings.Contains(optDest, ":"):
 		port, err := strconv.ParseUint(optDest, 10, 16)
 		if err != nil {
-			usage(fmt.Sprintf("invalid port number %q", optDest))
+			return usagef("invalid port number %q", optDest)
 		}
 		dial = func(ctx context.Context) (net.Conn, error) { return cl.DialTCPPort(ctx, uint16(port)) }
 	default:
 		addrPort, err := netip.ParseAddrPort(optDest)
 		if err != nil {
-			usage(fmt.Sprintf("invalid IP:port %q", optDest))
+			return usagef("invalid IP:port %q", optDest)
 		}
 		dial = func(ctx context.Context) (net.Conn, error) { return cl.DialTCP(ctx, addrPort) }
 	}
@@ -470,6 +605,7 @@ func clientMode(logf logger.Logf, connStr, optDest string) {
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
 	cl.DrainTCP(drainCtx)
+	return nil
 }
 
 // normalizeListenAddrPort fills in the missing parts of the --listen
@@ -490,13 +626,8 @@ func normalizeListenAddrPort(s string) string {
 	return s + ":0"
 }
 
-func clientSOCKSMode(logf logger.Logf) {
-	fs := flag.NewFlagSet("socks", flag.ExitOnError)
-	listen := fs.String("listen", "127.0.0.1:0", "SOCKS5 proxy listen [address]:port; a bare port means localhost, a bare address means an OS-assigned port")
-	fs.Parse(flag.Args()[1:]) // stripping off "socks"
-	args := fs.Args()
-
-	listenAddrPort := normalizeListenAddrPort(*listen)
+func clientSOCKSMode(logf logger.Logf, listen string, args []string) error {
+	listenAddrPort := normalizeListenAddrPort(listen)
 
 	// The address blob argument is optional: destination hostnames that
 	// are themselves address blobs are dialed directly (see
@@ -591,6 +722,7 @@ func clientSOCKSMode(logf logger.Logf) {
 		log.Printf("SOCKS running at %v", socksAddr)
 		log.Fatalf("SOCKS5 server exited: %v", ss.Serve(socksLn))
 	}
+	return nil
 }
 
 // socksTarget is where a SOCKS5 destination address should be dialed.
@@ -653,32 +785,31 @@ func classifySOCKSAddr(ctx context.Context, lookup func(context.Context, string)
 	return socksTarget{dst: netip.AddrPortFrom(ip.Unmap(), uint16(portNum))}, nil
 }
 
-func clientParseMode(logf logger.Logf) {
-	args := flag.Args()
-	if len(args) != 2 {
-		usage("tailcat parse <addrblob>")
+func clientParseMode(args []string) error {
+	if len(args) != 1 {
+		return usagef("parse requires one <addrblob> argument")
 	}
-	v, err := tailcat.ParseConnBlobRaw(tailcat.ConnBlob(args[1]))
+	v, err := tailcat.ParseConnBlobRaw(tailcat.ConnBlob(args[0]))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	e := json.NewEncoder(os.Stdout)
 	e.SetIndent("", "    ")
-	e.Encode(v)
+	return e.Encode(v)
 }
 
-func clientResolveMode() {
-	args := flag.Args()
-	if len(args) != 2 {
-		usage("tailcat resolve <addrblob>")
+func clientResolveMode(args []string) error {
+	if len(args) != 1 {
+		return usagef("resolve requires one <addrblob> argument")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rb, err := addrBlobArg(args[1]).Resolve(ctx, tailcat.DERPMapURL(*flagDERPMapURL), derpMapCache{})
+	rb, err := addrBlobArg(args[0]).Resolve(ctx, tailcat.DERPMapURL(*flagDERPMapURL), derpMapCache{})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	fmt.Println(rb)
+	return nil
 }
 
 func server(logf logger.Logf) {
@@ -1035,80 +1166,73 @@ func keyPath(name string) string {
 	return filepath.Join(confDir, "tailcat", "keys", name+".private.json")
 }
 
-func genKey() {
+func genKey(args []string) error {
 	if *flagKey != "" {
-		log.Fatalf("genkey's --key argument must be after \"genkey\"")
+		return usagef("genkey's --key argument must be after \"genkey\"")
 	}
-	args := flag.Args()
-	fs := flag.NewFlagSet("genkey", flag.ExitOnError)
+	if len(args) > 0 {
+		return usagef("genkey takes no positional arguments")
+	}
 
 	confDir, err := os.UserConfigDir()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	var (
-		key          = fs.String("key", "", "key path (if it contains a slash) or name (written to "+confDir+"/tailcat/keys/<name>.private.json). If empty, 'default' is used, or 'client-default' with --client.")
-		client       = fs.Bool("client", false, "generate a client identity key (no DERP region) and print its public key, for use with servers' --allow lists. The 'client-default' key is used automatically by client modes.")
-		force        = fs.Bool("force", false, "force overwrite of existing key")
-		delete       = fs.Bool("delete", false, "delete the key named by --key instead of generating one; --key is required and must be a name, not a path")
-		list         = fs.Bool("list", false, "list saved key names and exit")
-		region       = fs.String("region", "auto", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s). If 'auto', one is picked based on latency at each server startup. If 'list', list all regions.")
-		fixedRegion  = fs.Bool("fixed-region", false, "discover the nearest DERP region once, now, and bake it into the key and token, so future server startups (and clients) use it without re-probing")
-		embedDERPMap = fs.Bool("embed-derp-map", false, "embed the DERP map nodes in the connection string")
+		key          = genkeyKey
+		client       = genkeyClient
+		force        = genkeyForce
+		delete       = genkeyDelete
+		list         = genkeyList
+		region       = genkeyRegion
+		fixedRegion  = genkeyFixedRegion
+		embedDERPMap = genkeyEmbedDERPMap
 	)
-	fs.Parse(args[1:]) // stripping off "genkey"
-	switch len(fs.Args()) {
-	case 0:
-	default:
-		fmt.Fprintf(os.Stderr, "tailcat genkey [--client] [--key=<name>] [--force]\n")
-		os.Exit(1)
+	// isSet reports whether the named genkey flag was set explicitly,
+	// as opposed to holding its default value.
+	isSet := func(name string) bool {
+		f, ok := genkeyFS.GetFlag(name)
+		return ok && f.IsSet()
 	}
 	if *list {
 		ents, err := os.ReadDir(filepath.Join(confDir, "tailcat", "keys"))
 		if err != nil && !os.IsNotExist(err) {
-			log.Fatal(err)
+			return err
 		}
 		for _, e := range ents {
 			if name, ok := strings.CutSuffix(e.Name(), ".private.json"); ok {
 				fmt.Println(name)
 			}
 		}
-		return
+		return nil
 	}
 	if *delete {
 		if *key == "" {
-			log.Fatalf("genkey --delete requires saying which key to delete with --key=<name> (see genkey --list)")
+			return usagef("genkey --delete requires saying which key to delete with --key=<name> (see genkey --list)")
 		}
 		if keyIsPath(*key) {
-			log.Fatalf("can't delete key %q; it's a path", *key)
+			return usagef("can't delete key %q; it's a path", *key)
 		}
-		if err := os.Remove(keyPath(*key)); err != nil {
-			log.Fatal(err)
-		}
-		return
+		return os.Remove(keyPath(*key))
 	}
 	if *key == "" {
 		if *client {
-			*key = "client-default"
-		} else {
-			*key = "default"
+			return usagef("genkey requires a --key=<name>; client modes automatically load the key named \"client-default\" when it exists, making it the usual choice")
 		}
+		return usagef("genkey requires a --key=<name>; server mode automatically loads the key named \"default\" when it exists, making it the usual choice")
 	}
 	if *client {
-		fs.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "region", "fixed-region", "embed-derp-map":
-				log.Fatalf("genkey --client does not take --%s; client keys have no DERP region", f.Name)
+		for _, name := range []string{"region", "fixed-region", "embed-derp-map"} {
+			if isSet(name) {
+				return usagef("genkey --client does not take --%s; client keys have no DERP region", name)
 			}
-		})
+		}
 	}
 	if *fixedRegion {
-		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "region" {
-				log.Fatalf("genkey --fixed-region and --region are mutually exclusive")
-			}
-		})
+		if isSet("region") {
+			return usagef("genkey --fixed-region and --region are mutually exclusive")
+		}
 		// The empty region means "pick the best region now", below.
 		*region = ""
 	}
@@ -1138,7 +1262,7 @@ func genKey() {
 		}
 		fmt.Fprintf(os.Stderr, "# wrote file to %v\n", *key)
 		fmt.Println(priv.Private.Public().String())
-		return
+		return nil
 	}
 
 	var match string
@@ -1218,6 +1342,7 @@ func genKey() {
 	}
 	fmt.Fprintf(os.Stderr, "# wrote file to %v\n", *key)
 	fmt.Println(priv.Public.ConnBlob())
+	return nil
 }
 
 // or returns 0 on no match

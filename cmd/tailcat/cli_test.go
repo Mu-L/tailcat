@@ -1,0 +1,178 @@
+// Copyright (c) Tailscale Inc & contributors
+// SPDX-License-Identifier: BSD-3-Clause
+
+package main
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/peterbourgon/ff/v4"
+	"github.com/peterbourgon/ff/v4/ffhelp"
+)
+
+// TestHelpListsCommandTree verifies that the generated root help
+// mentions every subcommand and the global flags, the declarative
+// help dump that motivated the ff port.
+func TestHelpListsCommandTree(t *testing.T) {
+	help := ffhelp.Command(newRootCommand()).String()
+	for _, want := range []string{
+		"ping", "socks", "ssh", "parse", "resolve", "genkey", "printpub",
+		"version", "readme",
+		"--serve", "--key", "--allow", "--derpmap-url", "--full-address",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("root help is missing %q", want)
+		}
+	}
+	if strings.Contains(help, "\n  -serve") {
+		t.Errorf("root help renders single-dash flags")
+	}
+}
+
+// parseCLI parses args against a fresh command tree and returns the
+// root command. It doesn't run anything.
+func parseCLI(t *testing.T, args ...string) (root *ff.Command, err error) {
+	t.Helper()
+	root = newRootCommand()
+	return root, root.Parse(args)
+}
+
+// TestSSHTrailingArgs verifies that flag parsing stops at the ssh
+// destination, so a remote command's own flags (here "-la") are
+// passed through rather than parsed.
+func TestSSHTrailingArgs(t *testing.T) {
+	root, err := parseCLI(t, "ssh", "-p", "2222", "user@tcblob", "ls", "-la")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := root.GetSelected()
+	if sel.Name != "ssh" {
+		t.Fatalf("selected command = %q; want ssh", sel.Name)
+	}
+	f, ok := sel.Flags.GetFlag("p")
+	if !ok {
+		t.Fatal("no -p flag")
+	}
+	if got := f.GetValue(); got != "2222" {
+		t.Errorf("-p = %q; want 2222", got)
+	}
+	got := sel.Flags.(*ff.FlagSet).GetArgs()
+	want := []string{"user@tcblob", "ls", "-la"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("leftover args = %q; want %q", got, want)
+	}
+}
+
+// TestSocksTrailingArgs verifies that a child command's flags after
+// the address blob are left unparsed.
+func TestSocksTrailingArgs(t *testing.T) {
+	root, err := parseCLI(t, "socks", "--listen=1080", "tcblob", "curl", "--fail", "http://x/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := root.GetSelected()
+	if sel.Name != "socks" {
+		t.Fatalf("selected command = %q; want socks", sel.Name)
+	}
+	got := sel.Flags.(*ff.FlagSet).GetArgs()
+	want := []string{"tcblob", "curl", "--fail", "http://x/"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("leftover args = %q; want %q", got, want)
+	}
+}
+
+// TestGlobalFlagPlacement verifies that global flags work both before
+// the subcommand (the only placement the old CLI accepted) and after
+// it (via flag set parenting).
+func TestGlobalFlagPlacement(t *testing.T) {
+	for _, args := range [][]string{
+		{"--key=new", "--derpmap-url=http://d/", "ping", "--timeout=5s", "tcblob"},
+		{"ping", "--key=new", "--derpmap-url=http://d/", "--timeout=5s", "tcblob"},
+	} {
+		if _, err := parseCLI(t, args...); err != nil {
+			t.Fatalf("parse %q: %v", args, err)
+		}
+		if *flagKey != "new" {
+			t.Errorf("parse %q: --key = %q; want new", args, *flagKey)
+		}
+		if *flagDERPMapURL != "http://d/" {
+			t.Errorf("parse %q: --derpmap-url = %q; want http://d/", args, *flagDERPMapURL)
+		}
+	}
+}
+
+// TestHelpRequests verifies that -h, --help, and the help argument
+// all report ErrHelp instead of being treated as an address blob.
+func TestHelpRequests(t *testing.T) {
+	for _, args := range [][]string{
+		{"-h"},
+		{"--help"},
+		{"genkey", "--help"},
+		{"ssh", "-h"},
+	} {
+		if _, err := parseCLI(t, args...); !errors.Is(err, ff.ErrHelp) {
+			t.Errorf("parse %q: err = %v; want ErrHelp", args, err)
+		}
+	}
+
+	root, err := parseCLI(t, "help")
+	if err != nil {
+		t.Fatalf("parse help: %v", err)
+	}
+	if err := root.Run(t.Context()); !errors.Is(err, ff.ErrHelp) {
+		t.Errorf("run help: err = %v; want ErrHelp", err)
+	}
+}
+
+// TestGenkeyRequiresKeyName verifies that genkey no longer invents a
+// key name: writing a key to disk is a big enough action that the
+// user has to pick the name, with the magic names suggested.
+func TestGenkeyRequiresKeyName(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		want string // expected substring of the error
+	}{
+		{[]string{"genkey"}, `"default"`},
+		{[]string{"genkey", "--client"}, `"client-default"`},
+	} {
+		root, err := parseCLI(t, tt.args...)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tt.args, err)
+		}
+		err = root.Run(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "--key=<name>") || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("run %q: err = %v; want one requiring --key=<name> and mentioning %s", tt.args, err, tt.want)
+		}
+		var ue usageError
+		if !errors.As(err, &ue) {
+			t.Errorf("run %q: err is not a usageError", tt.args)
+		}
+	}
+}
+
+// TestVersionSubcommand verifies that "tailcat version" dispatches to
+// the version subcommand rather than being treated as an address blob.
+func TestVersionSubcommand(t *testing.T) {
+	root, err := parseCLI(t, "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel := root.GetSelected(); sel.Name != "version" {
+		t.Errorf("selected command = %q; want version", sel.Name)
+	}
+}
+
+// TestUnknownArgSelectsRoot verifies that a non-subcommand first
+// argument still selects the root command, whose exec treats it as an
+// address blob in client pipe mode.
+func TestUnknownArgSelectsRoot(t *testing.T) {
+	root, err := parseCLI(t, "tcSOMEBLOB", "80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel := root.GetSelected(); sel != root {
+		t.Errorf("selected command = %q; want root", sel.Name)
+	}
+}

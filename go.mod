@@ -9,6 +9,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/google/go-cmp v0.7.0
 	github.com/klauspost/compress v1.19.1
+	github.com/peterbourgon/ff/v4 v4.0.0-beta.1
 	github.com/tailscale/gliderssh v0.3.4-0.20260716005906-1a0f895faf28
 	github.com/u-root/u-root v0.14.0
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745

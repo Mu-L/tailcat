@@ -260,7 +260,7 @@ starting a fresh single-use server or re-listening on an address you may
 have shared in the past.
 
 ```sh
-$ tailcat genkey --region=nyc
+$ tailcat genkey --key=default --region=nyc
 # prints the token; key saved to ~/.config/tailcat/keys/default.private.json
 
 # later; the key named "default" is used automatically once it exists:
@@ -302,7 +302,7 @@ On the client machine, generate a client identity keypair. It prints
 the public key, which is all the server needs to know:
 
 ```sh
-client$ tailcat genkey --client
+client$ tailcat genkey --client --key=client-default
 # wrote file to ~/.config/tailcat/keys/client-default.private.json
 nodekey:cfb6bfa77a0654d7450947fd6acef17d2cd848da1d30b2540b13dac272ddfd16
 ```
@@ -311,7 +311,7 @@ On the server, generate a server keypair pinned to its nearest DERP
 region (see why below), then serve SSH to only that client:
 
 ```sh
-server$ tailcat genkey --fixed-region
+server$ tailcat genkey --key=default --fixed-region
 # wrote file to ~/.config/tailcat/keys/default.private.json
 tcXXXXXXXXX
 
@@ -339,7 +339,7 @@ server, or even learn that one is running.
 Why `--fixed-region`: it discovers the nearest DERP region once, at
 genkey time, and bakes its ID into both the printed token and the
 saved key file, so server restarts bind to the same region (keeping
-the published token valid) without re-probing. Plain `tailcat genkey`
+the published token valid) without re-probing. Otherwise genkey
 defaults to `--region=auto`, which instead bakes in "pick at
 startup": fine for one-off use, but a token published in DNS should
 name a fixed region so clients and future server restarts all
@@ -358,7 +358,7 @@ itself via Let's Encrypt), then generate a server key that uses it by
 passing its hostname (or several, comma-separated) as the region:
 
 ```sh
-server$ tailcat genkey --region=derp.example.com
+server$ tailcat genkey --key=default --region=derp.example.com
 tcomFwWCCAIsKOqPUux6ClG2RM4A_vOq4VBzGgHGGjq9OsJuFKSWFygaFhToGhYWhwZGVycC5leGFtcGxlLmNvbQ
 
 server$ tailcat --serve=22
