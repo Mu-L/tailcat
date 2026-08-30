@@ -12,12 +12,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"tailscale.com/tstest/integration"
 )
+
+// buildTailcat builds the tailcat binary into a temp dir and returns
+// its path, with the ".exe" suffix that Windows requires to exec it.
+func buildTailcat(t *testing.T) string {
+	bin := filepath.Join(t.TempDir(), "tailcat")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	return bin
+}
 
 // cacheEnv returns environment variables that point os.UserCacheDir
 // at a temp dir on all operating systems, so test runs don't litter
@@ -41,10 +55,7 @@ func cacheEnv(t *testing.T) []string {
 // (plus TAILCAT_ADDR_FILE) to test the bottles without network
 // access, so it must not regress.
 func TestLocalDERPMode(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "tailcat")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildTailcat(t)
 
 	const derpMapURL = "http://127.0.0.1:9/unreachable"
 	addrFile := filepath.Join(t.TempDir(), "addr")
@@ -110,10 +121,7 @@ func TestLocalDERPMode(t *testing.T) {
 // server must not exit before its FIN is delivered, which once made
 // clients hang forever).
 func TestPipeMode(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "tailcat")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildTailcat(t)
 
 	dm := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
 	dmJSON, err := json.Marshal(dm)

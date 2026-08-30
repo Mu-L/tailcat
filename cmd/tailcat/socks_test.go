@@ -153,10 +153,7 @@ func TestClassifySOCKSAddr(t *testing.T) {
 // test existed, socks mode ignored --key and could never reach a
 // server locked down with --allow (issue #24).
 func TestSOCKSClientKey(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "tailcat")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	bin := buildTailcat(t)
 
 	dm := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
 	dmJSON, err := json.Marshal(dm)
