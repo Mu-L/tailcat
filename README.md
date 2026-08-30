@@ -96,6 +96,8 @@ so packagers (Homebrew, AUR, NixOS, etc.) can build the same way:
 $ go build -tags "$(cat build-tags.txt)" -ldflags "-s -w" ./cmd/tailcat
 ```
 
+See [build-tags.md](./build-tags.md) for the details.
+
 ## Usage
 
 ### Pipe stdin/stdout between two machines
