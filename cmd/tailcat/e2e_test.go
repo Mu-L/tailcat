@@ -22,49 +22,77 @@ import (
 	"tailscale.com/tstest/integration"
 )
 
-// binDir is where buildTailcatOnce puts the binary; TestMain removes
-// it after the tests run.
-var binDir string
+var (
+	buildOnce sync.Once
+	buildErr  error
+	// builtBin describes the built binary. Its Path is in the building
+	// test's TempDir and may be gone by the time a later test runs, but
+	// its FD (or Contents on Windows) stays usable; see CopyTo.
+	builtBin    integration.BinaryInfo
+	builtBinDir string
+)
 
-func TestMain(m *testing.M) {
-	code := m.Run()
-	if binDir != "" {
-		os.RemoveAll(binDir)
+// buildTailcat returns the path of a tailcat binary built with the
+// same build tags official releases use, so the end-to-end tests
+// exercise the released feature set. (The test harness itself must
+// stay untagged: the tailscale.com test-only dependencies do not
+// compile under the release omit tags, so only the child binary under
+// test gets them.)
+//
+// The binary is built once per test process, into the first calling
+// test's TempDir so the testing framework cleans it up even when
+// tests fail; later tests get it hardlinked or copied into their own
+// TempDirs via integration.BinaryInfo.CopyTo.
+func buildTailcat(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	buildOnce.Do(func() { buildErr = buildTailcatBinary(dir) })
+	if buildErr != nil {
+		t.Fatal(buildErr)
 	}
-	os.Exit(code)
+	if dir == builtBinDir {
+		return builtBin.Path
+	}
+	bi, err := builtBin.CopyTo(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bi.Path
 }
 
-// buildTailcatOnce builds the tailcat binary once per test process,
-// with the same build tags official releases use, so the end-to-end
-// tests exercise the released feature set. The test harness itself
-// must stay untagged: the tailscale.com test-only dependencies do not
-// compile under the release omit tags, so only the child binary under
-// test gets them.
-var buildTailcatOnce = sync.OnceValues(func() (string, error) {
-	dir, err := os.MkdirTemp("", "tailcat-e2e")
-	if err != nil {
-		return "", err
-	}
-	binDir = dir
+// buildTailcatBinary builds the release-tagged tailcat binary into
+// dir and initializes builtBin and builtBinDir.
+func buildTailcatBinary(dir string) error {
 	bin := filepath.Join(dir, "tailcat")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
 	if out, err := exec.Command("go", "build", "-tags", buildtags.ReleaseTags(), "-o", bin, ".").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("build: %v\n%s", err, out)
+		return fmt.Errorf("build: %v\n%s", err, out)
 	}
-	return bin, nil
-})
-
-// buildTailcat returns the path of the release-tagged tailcat binary,
-// building it on first use.
-func buildTailcat(t *testing.T) string {
-	t.Helper()
-	bin, err := buildTailcatOnce()
+	fi, err := os.Stat(bin)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	return bin
+	bi := integration.BinaryInfo{Path: bin, Size: fi.Size()}
+	if runtime.GOOS == "windows" {
+		bi.Contents, err = os.ReadFile(bin)
+		if err != nil {
+			return err
+		}
+	} else {
+		// The FD is deliberately never closed: it keeps the binary's
+		// inode alive for CopyTo after this test's TempDir is deleted,
+		// and the process exit closes it.
+		bi.FD, err = os.OpenFile(bin, os.O_RDONLY, 0)
+		if err != nil {
+			return err
+		}
+		bi.FDMu = new(sync.Mutex)
+	}
+	builtBin = bi
+	builtBinDir = dir
+	return nil
 }
 
 // testNoopCommand returns a child command that exits successfully,
