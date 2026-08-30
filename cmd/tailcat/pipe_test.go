@@ -5,46 +5,14 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"tailscale.com/tstest/integration"
 )
-
-// buildTailcat builds the tailcat binary into a temp dir and returns
-// its path, with the ".exe" suffix that Windows requires to exec it.
-func buildTailcat(t *testing.T) string {
-	bin := filepath.Join(t.TempDir(), "tailcat")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	return bin
-}
-
-// cacheEnv returns environment variables that point os.UserCacheDir
-// at a temp dir on all operating systems, so test runs don't litter
-// the real user cache with DERP map entries keyed by a test's
-// ephemeral --derpmap-url.
-func cacheEnv(t *testing.T) []string {
-	dir := t.TempDir()
-	return []string{
-		"XDG_CACHE_HOME=" + dir, // Linux
-		"HOME=" + dir,           // macOS
-		"LocalAppData=" + dir,   // Windows
-	}
-}
 
 // TestLocalDERPMode runs the built tailcat binary in server mode with
 // TS_DEBUG_TAILCAT_LOCAL_DERP=1, which starts a DERP server on
@@ -72,20 +40,7 @@ func TestLocalDERPMode(t *testing.T) {
 	}
 	defer server.Process.Kill()
 
-	var blob string
-	deadline := time.Now().Add(30 * time.Second)
-	for blob == "" {
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for addr file; server stderr:\n%s", serverErr.String())
-		}
-		b, err := os.ReadFile(addrFile)
-		if err == nil && len(b) > 0 {
-			blob = strings.TrimSpace(string(b))
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Logf("server blob: %s", blob)
+	blob := waitBlob(t, addrFile, &serverErr)
 
 	const payload = "hello hermetic world"
 	client := exec.Command(bin, "--key=new", "--derpmap-url="+derpMapURL, blob)
@@ -121,22 +76,9 @@ func TestLocalDERPMode(t *testing.T) {
 // server must not exit before its FIN is delivered, which once made
 // clients hang forever).
 func TestPipeMode(t *testing.T) {
-	bin := buildTailcat(t)
+	e := newTestEnv(t)
 
-	dm := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
-	dmJSON, err := json.Marshal(dm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(dmJSON)
-	}))
-	defer dmSrv.Close()
-
-	addrFile := filepath.Join(t.TempDir(), "addr")
-
-	server := exec.Command(bin, "--key=new", "--derpmap-url="+dmSrv.URL)
-	server.Env = append(append(os.Environ(), cacheEnv(t)...), "TAILCAT_ADDR_FILE="+addrFile)
+	server, addrFile := e.serverCmd()
 	serverOut, err := server.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -148,23 +90,9 @@ func TestPipeMode(t *testing.T) {
 	}
 	defer server.Process.Kill()
 
-	var blob string
-	deadline := time.Now().Add(30 * time.Second)
-	for blob == "" {
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for addr file; server stderr:\n%s", serverErr.String())
-		}
-		b, err := os.ReadFile(addrFile)
-		if err == nil && len(b) > 0 {
-			blob = strings.TrimSpace(string(b))
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Logf("server blob: %s", blob)
+	blob := waitBlob(t, addrFile, &serverErr)
 
-	client := exec.Command(bin, "--key=new", "--derpmap-url="+dmSrv.URL, blob)
-	client.Env = append(os.Environ(), cacheEnv(t)...)
+	client := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, blob)
 	const payload = "pretend this is a tarball"
 	client.Stdin = strings.NewReader(payload)
 	var clientOut, clientErr bytes.Buffer

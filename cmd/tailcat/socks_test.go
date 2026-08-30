@@ -4,22 +4,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"tailscale.com/tstest/integration"
 )
 
 func TestClassifySOCKSAddr(t *testing.T) {
@@ -153,58 +144,25 @@ func TestClassifySOCKSAddr(t *testing.T) {
 // test existed, socks mode ignored --key and could never reach a
 // server locked down with --allow (issue #24).
 func TestSOCKSClientKey(t *testing.T) {
-	bin := buildTailcat(t)
-
-	dm := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
-	dmJSON, err := json.Marshal(dm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(dmJSON)
-	}))
-	defer dmSrv.Close()
+	e := newTestEnv(t)
 
 	clientKey := filepath.Join(t.TempDir(), "c.private.json")
-	if out, err := exec.Command(bin, "genkey", "--client", "--key="+clientKey).CombinedOutput(); err != nil {
+	if out, err := e.cmd("genkey", "--client", "--key="+clientKey).CombinedOutput(); err != nil {
 		t.Fatalf("genkey: %v\n%s", err, out)
 	}
-	pub, err := exec.Command(bin, "--key="+clientKey, "printpub").Output()
+	pub, err := e.cmd("--key="+clientKey, "printpub").Output()
 	if err != nil {
 		t.Fatalf("printpub: %v", err)
 	}
 	cpub := strings.TrimSpace(string(pub))
 
-	addrFile := filepath.Join(t.TempDir(), "addr")
-	server := exec.Command(bin, "--key=new", "--derpmap-url="+dmSrv.URL, "--serve=all", "--allow="+cpub)
-	server.Env = append(append(os.Environ(), cacheEnv(t)...), "TAILCAT_ADDR_FILE="+addrFile)
-	var serverErr bytes.Buffer
-	server.Stderr = &serverErr
-	if err := server.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer server.Process.Kill()
-
-	var blob string
-	deadline := time.Now().Add(30 * time.Second)
-	for blob == "" {
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for addr file; server stderr:\n%s", serverErr.String())
-		}
-		b, err := os.ReadFile(addrFile)
-		if err == nil && len(b) > 0 {
-			blob = strings.TrimSpace(string(b))
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Logf("server blob: %s", blob)
+	_, blob, _ := e.startServer("--serve=all", "--allow="+cpub)
 
 	// The socks client pings the server before starting the proxy and
 	// exits non-zero if the ping fails, so a successful run of a
 	// trivial child command proves the allowlisted handshake worked.
-	client := exec.Command(bin, "--key="+clientKey, "--derpmap-url="+dmSrv.URL, "socks", blob, "true")
-	client.Env = append(os.Environ(), cacheEnv(t)...)
+	args := append([]string{"--key=" + clientKey, "--derpmap-url=" + e.derpMapURL, "socks", blob}, testNoopCommand()...)
+	client := e.cmd(args...)
 	if out, err := client.CombinedOutput(); err != nil {
 		t.Fatalf("socks with allowlisted --key failed: %v\n%s", err, out)
 	}
