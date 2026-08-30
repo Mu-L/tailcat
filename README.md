@@ -84,6 +84,18 @@ yay -S tailcat
 yay -S tailcat-bin
 ```
 
+### Packaging from source
+
+The official binaries are built with a list of build tags that omits
+unused Tailscale features, making them about 16% smaller. The
+recommended tag list is checked in as
+[build-tags.txt](./build-tags.txt) (and kept accurate by a CI test),
+so packagers (Homebrew, AUR, NixOS, etc.) can build the same way:
+
+```sh
+$ go build -tags "$(cat build-tags.txt)" -ldflags "-s -w" ./cmd/tailcat
+```
+
 ## Usage
 
 ### Pipe stdin/stdout between two machines
