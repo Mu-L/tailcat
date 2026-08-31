@@ -166,6 +166,7 @@ func newRootCommand() *ff.Command {
 				},
 			},
 			sshCommand(rootFS),
+			cpCommand(rootFS),
 			{
 				Name:      "parse",
 				Usage:     "tailcat parse <addrblob>",
@@ -293,6 +294,12 @@ Client mode, ssh:
 Client mode, ssh to specific IP:port via addrblob's exit node:
 
 	tailcat ssh -p 10.0.0.1:22 <addrblob>
+
+Client mode, copy files to or from a server (see "tailcat cp --help"
+and serve's files service):
+
+	tailcat cp foo.txt <addrblob>:
+	tailcat cp -r <addrblob>:dir ./dir
 
 Client mode, run an ephemeral SOCKS5 proxy and pass its address
 as 'all_proxy' environment variable to a child process. Destination

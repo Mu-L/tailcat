@@ -27,3 +27,17 @@ func sshCommand(parent *ff.FlagSet) *ff.Command {
 		},
 	}
 }
+
+// cpCommand returns a stub "tailcat cp" subcommand that only reports
+// that SSH support was omitted from this build.
+func cpCommand(parent *ff.FlagSet) *ff.Command {
+	return &ff.Command{
+		Name:      "cp",
+		Usage:     "tailcat cp",
+		ShortHelp: "(SSH support not included in this build)",
+		Flags:     ff.NewFlagSet("cp").SetParent(parent),
+		Exec: func(ctx context.Context, args []string) error {
+			return errors.New("ssh support not compiled in")
+		},
+	}
+}
