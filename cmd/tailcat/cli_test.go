@@ -4,7 +4,9 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -123,6 +125,43 @@ func TestHelpRequests(t *testing.T) {
 	}
 	if err := root.Run(t.Context()); !errors.Is(err, ff.ErrHelp) {
 		t.Errorf("run help: err = %v; want ErrHelp", err)
+	}
+}
+
+// TestHelpGoesToStdout verifies that explicitly requested help is
+// written to stdout, so it can be piped into a pager, while
+// usage-error help stays on stderr, off a pipeline's stdout.
+func TestHelpGoesToStdout(t *testing.T) {
+	bin := buildTailcat(t)
+	run := func(args ...string) (stdout, stderr string, err error) {
+		var outBuf, errBuf bytes.Buffer
+		cmd := exec.Command(bin, args...)
+		cmd.Stdout = &outBuf
+		cmd.Stderr = &errBuf
+		err = cmd.Run()
+		return outBuf.String(), errBuf.String(), err
+	}
+
+	stdout, stderr, err := run("-h")
+	if err != nil {
+		t.Fatalf("-h: %v", err)
+	}
+	if !strings.Contains(stdout, "SUBCOMMANDS") {
+		t.Errorf("-h stdout = %q; want help text", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("-h stderr = %q; want empty", stderr)
+	}
+
+	stdout, stderr, err = run("genkey")
+	if err == nil {
+		t.Error("genkey: succeeded; want usage error")
+	}
+	if stdout != "" {
+		t.Errorf("genkey stdout = %q; want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--key=<name>") {
+		t.Errorf("genkey stderr = %q; want usage error with help", stderr)
 	}
 }
 

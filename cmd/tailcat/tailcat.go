@@ -447,9 +447,11 @@ func main() {
 		return
 	}
 	if errors.Is(err, ff.ErrHelp) {
-		// ffhelp.Command renders help for the subcommand selected
-		// during the parse, or for the root command if none was.
-		ffhelp.Command(root).WriteTo(os.Stderr)
+		// Explicitly requested help goes to stdout, so it can be
+		// piped into a pager. ffhelp.Command renders help for the
+		// subcommand selected during the parse, or for the root
+		// command if none was.
+		ffhelp.Command(root).WriteTo(os.Stdout)
 		os.Exit(0)
 	}
 	// Usage errors (including unknown flags) get the same help text
