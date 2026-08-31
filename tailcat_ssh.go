@@ -30,33 +30,54 @@ import (
 // auth-free SSH server.
 func SupportsSSHServer() bool { return true }
 
-// HandleTailscaleSSHConn handles an incoming TCP connection as an SSH session.
+// HandleTailscaleSSHConn handles an incoming TCP connection as an SSH session
+// with a shell enabled. See [Server.SSHConnHandler] for the details.
+func (s *Server) HandleTailscaleSSHConn(c net.Conn) {
+	s.SSHConnHandler(SSHOptions{Shell: true})(c)
+}
+
+// SSHConnHandler returns a handler that serves an incoming TCP
+// connection as an SSH session with the capabilities in opts.
 // Authentication is not required — the WireGuard tunnel provides identity.
 // The connection is served using the gliderlabs/ssh library with a single
 // ed25519 host key generated on first use under tailcat/ssh in the user's
 // config directory (os.UserConfigDir).
 //
-// Two modes are supported: if the SSH client sends a command, it is run by
-// the user's shell (PowerShell on Windows); otherwise an interactive login
-// shell is started with a PTY.
-func (s *Server) HandleTailscaleSSHConn(c net.Conn) {
-	keys, err := getHostKeys()
-	if err != nil {
-		s.lb.logf("SSH host keys: %v", err)
-		c.Close()
-		return
+// With opts.Shell, two session modes are supported: if the SSH client
+// sends a command, it is run by the user's shell (PowerShell on
+// Windows); otherwise an interactive login shell is started with a
+// PTY. The SFTP subsystem is served per opts.Files; see [SSHOptions].
+func (s *Server) SSHConnHandler(opts SSHOptions) func(net.Conn) {
+	return func(c net.Conn) {
+		keys, err := getHostKeys()
+		if err != nil {
+			s.lb.logf("SSH host keys: %v", err)
+			c.Close()
+			return
+		}
+		handler := sessionHandler
+		if !opts.Shell {
+			handler = func(sess ssh.Session) {
+				fmt.Fprintf(sess.Stderr(), "this tailcat server only offers file transfer (SFTP); shell and exec sessions are disabled\r\n")
+				sess.Exit(1)
+			}
+		}
+		subsystems := map[string]ssh.SubsystemHandler{}
+		if h := s.sftpSubsystemHandler(opts); h != nil {
+			subsystems["sftp"] = h
+		}
+		srv := &ssh.Server{
+			Handler:             handler,
+			NoClientAuthHandler: func(ctx ssh.Context) error { return nil },
+			ChannelHandlers:     map[string]ssh.ChannelHandler{"session": ssh.DefaultSessionHandler},
+			RequestHandlers:     map[string]ssh.RequestHandler{},
+			SubsystemHandlers:   subsystems,
+		}
+		for _, k := range keys {
+			srv.AddHostKey(k)
+		}
+		srv.HandleConn(c)
 	}
-	srv := &ssh.Server{
-		Handler:             sessionHandler,
-		NoClientAuthHandler: func(ctx ssh.Context) error { return nil },
-		ChannelHandlers:     map[string]ssh.ChannelHandler{"session": ssh.DefaultSessionHandler},
-		RequestHandlers:     map[string]ssh.RequestHandler{},
-		SubsystemHandlers:   map[string]ssh.SubsystemHandler{},
-	}
-	for _, k := range keys {
-		srv.AddHostKey(k)
-	}
-	srv.HandleConn(c)
 }
 
 // sessionHandler handles a single SSH session (shell or exec).
