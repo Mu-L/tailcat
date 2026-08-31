@@ -189,6 +189,17 @@ func TestGenkeyRequiresKeyName(t *testing.T) {
 			t.Errorf("run %q: err is not a usageError", tt.args)
 		}
 	}
+
+	// The server-mode magic name with --client is almost certainly a
+	// mix-up.
+	root, err := parseCLI(t, "genkey", "--client", "--key=default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = root.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "--key=client-default") {
+		t.Errorf("genkey --client --key=default: err = %v; want one suggesting --key=client-default", err)
+	}
 }
 
 // TestVersionSubcommand verifies that "tailcat version" dispatches to

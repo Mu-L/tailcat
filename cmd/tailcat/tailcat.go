@@ -1310,6 +1310,9 @@ func genKey(args []string) error {
 				return usagef("genkey --client does not take --%s; client keys have no DERP region", name)
 			}
 		}
+		if *key == "default" {
+			return usagef("genkey --client with --key=default is probably a mistake: \"default\" is the name server mode loads automatically, and client modes load \"client-default\", so you likely want --key=client-default")
+		}
 	}
 	if *fixedRegion {
 		if isSet("region") {
