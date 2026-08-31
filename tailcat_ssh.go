@@ -1,7 +1,7 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
-//go:build (linux || darwin) && !ts_omit_ssh
+//go:build (linux || darwin || windows) && !ts_omit_ssh
 
 package tailcat
 
@@ -18,17 +18,12 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 
-	"github.com/creack/pty"
 	ssh "github.com/tailscale/gliderssh"
-	"github.com/u-root/u-root/pkg/termios"
 	gossh "golang.org/x/crypto/ssh"
-	"golang.org/x/sys/unix"
 )
 
 // SupportsSSHServer reports whether the platform supports running the built-in
@@ -38,11 +33,12 @@ func SupportsSSHServer() bool { return true }
 // HandleTailscaleSSHConn handles an incoming TCP connection as an SSH session.
 // Authentication is not required — the WireGuard tunnel provides identity.
 // The connection is served using the gliderlabs/ssh library with a single
-// ed25519 host key generated on first use in ~/.config/tailcat/ssh/.
+// ed25519 host key generated on first use under tailcat/ssh in the user's
+// config directory (os.UserConfigDir).
 //
-// Two modes are supported: if the SSH client sends a command, it is executed
-// via the user's shell with "-c"; otherwise an interactive login shell is
-// started with a PTY.
+// Two modes are supported: if the SSH client sends a command, it is run by
+// the user's shell (PowerShell on Windows); otherwise an interactive login
+// shell is started with a PTY.
 func (s *Server) HandleTailscaleSSHConn(c net.Conn) {
 	keys, err := getHostKeys()
 	if err != nil {
@@ -72,25 +68,10 @@ func sessionHandler(sess ssh.Session) {
 		return
 	}
 
-	shell := loginShell(u)
-	rawCmd := sess.RawCommand()
-
-	var args []string
-	if rawCmd == "" {
-		args = []string{shell, "-l"}
-	} else {
-		args = []string{shell, "-c", rawCmd}
-	}
-
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Dir = u.HomeDir
-
-	cmd.Env = []string{
-		"SHELL=" + shell,
-		"USER=" + u.Username,
-		"HOME=" + u.HomeDir,
-		"PATH=" + defaultPath(u),
-	}
+	// newSessionCommand is per-platform (tailcat_ssh_unix.go,
+	// tailcat_ssh_windows.go). It returns an unstarted command with
+	// Args, Dir, and the base environment set.
+	cmd := newSessionCommand(u, sess.RawCommand())
 	for _, env := range sess.Environ() {
 		if acceptEnvPair(env) {
 			cmd.Env = append(cmd.Env, env)
@@ -104,103 +85,6 @@ func sessionHandler(sess ssh.Session) {
 	} else {
 		runWithPipes(sess, cmd)
 	}
-}
-
-// runWithPTY runs cmd attached to a pseudo-terminal.
-func runWithPTY(sess ssh.Session, cmd *exec.Cmd, ptyReq ssh.Pty, winCh <-chan ssh.Window) {
-	ptmx, tty, err := pty.Open()
-	if err != nil {
-		fmt.Fprintf(sess.Stderr(), "pty open: %v\r\n", err)
-		sess.Exit(1)
-		return
-	}
-	defer ptmx.Close()
-	defer tty.Close()
-
-	// Configure terminal modes from the SSH request.
-	if rc, err := tty.SyscallConn(); err == nil {
-		rc.Control(func(fd uintptr) {
-			tios, err := termios.GTTY(int(fd))
-			if err != nil {
-				return
-			}
-			tios.Row = int(ptyReq.Window.Height)
-			tios.Col = int(ptyReq.Window.Width)
-			for c, v := range ptyReq.Modes {
-				if c == gossh.TTY_OP_ISPEED {
-					tios.Ispeed = int(v)
-					continue
-				}
-				if c == gossh.TTY_OP_OSPEED {
-					tios.Ospeed = int(v)
-					continue
-				}
-				k, ok := opcodeShortName[c]
-				if !ok {
-					continue
-				}
-				if _, ok := tios.CC[k]; ok {
-					tios.CC[k] = uint8(v)
-					continue
-				}
-				if _, ok := tios.Opts[k]; ok {
-					tios.Opts[k] = v > 0
-					continue
-				}
-			}
-			tios.STTY(int(fd))
-		})
-	}
-
-	if ptyReq.Term != "" {
-		cmd.Env = append(cmd.Env, "TERM="+ptyReq.Term)
-	}
-
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setctty: true,
-		Setsid:  true,
-	}
-	cmd.Stdin = tty
-	cmd.Stdout = tty
-	cmd.Stderr = tty
-
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(sess.Stderr(), "start: %v\r\n", err)
-		sess.Exit(1)
-		return
-	}
-	tty.Close() // child owns the tty now
-
-	// Handle window size changes. The goroutine runs until gliderssh
-	// closes winCh, which happens only once the whole session channel
-	// shuts down, after this function has returned and closed ptmx. It
-	// therefore gets its own duplicated file descriptor rather than
-	// racing the deferred ptmx.Close (and whatever reuses that fd).
-	if winchFd, err := unix.Dup(int(ptmx.Fd())); err == nil {
-		go func() {
-			defer unix.Close(winchFd)
-			for win := range winCh {
-				unix.IoctlSetWinsize(winchFd, syscall.TIOCSWINSZ, &unix.Winsize{
-					Row:    uint16(win.Height),
-					Col:    uint16(win.Width),
-					Xpixel: uint16(win.WidthPixels),
-					Ypixel: uint16(win.HeightPixels),
-				})
-			}
-		}()
-	}
-
-	// I/O: session ↔ pty master.
-	go func() {
-		io.Copy(ptmx, sess) // stdin
-	}()
-	io.Copy(sess, ptmx) // stdout (blocks until pty closes)
-
-	if err := cmd.Wait(); err != nil {
-		sess.Exit(exitCode(err))
-		return
-	}
-	sess.Exit(0)
 }
 
 // runWithPipes runs cmd with stdin/stdout/stderr pipes (no PTY).
@@ -285,33 +169,8 @@ func acceptEnvPair(kv string) bool {
 	return k == "TERM" || k == "LANG" || strings.HasPrefix(k, "LC_")
 }
 
-// loginShell returns the user's login shell.
-func loginShell(u *user.User) string {
-	switch runtime.GOOS {
-	case "darwin":
-		out, err := exec.Command("dscl", ".", "-read", filepath.Join("/Users", u.Username), "UserShell").Output()
-		if err == nil {
-			if s, ok := strings.CutPrefix(string(out), "UserShell: "); ok {
-				return strings.TrimSpace(s)
-			}
-		}
-	}
-	if e := os.Getenv("SHELL"); e != "" {
-		return e
-	}
-	return "/bin/sh"
-}
-
-// defaultPath returns the default PATH for the given user.
-func defaultPath(u *user.User) string {
-	if u.Uid == "0" {
-		return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	}
-	return "/usr/local/bin:/usr/bin:/bin"
-}
-
 // getHostKeys returns the SSH host key signers, generating an ed25519 key
-// in ~/.config/tailcat/ssh/ if one doesn't exist.
+// in the tailcat/ssh config directory if one doesn't exist.
 func getHostKeys() ([]gossh.Signer, error) {
 	dir, err := sshKeyDir()
 	if err != nil {
@@ -372,65 +231,4 @@ func hostKeyFileOrCreate(keyDir string) ([]byte, error) {
 		return nil, err
 	}
 	return pemData, nil
-}
-
-// opcodeShortName maps SSH terminal mode opcodes to mnemonic names
-// expected by the termios package.
-var opcodeShortName = map[uint8]string{
-	gossh.VINTR:         "intr",
-	gossh.VQUIT:         "quit",
-	gossh.VERASE:        "erase",
-	gossh.VKILL:         "kill",
-	gossh.VEOF:          "eof",
-	gossh.VEOL:          "eol",
-	gossh.VEOL2:         "eol2",
-	gossh.VSTART:        "start",
-	gossh.VSTOP:         "stop",
-	gossh.VSUSP:         "susp",
-	gossh.VDSUSP:        "dsusp",
-	gossh.VREPRINT:      "rprnt",
-	gossh.VWERASE:       "werase",
-	gossh.VLNEXT:        "lnext",
-	gossh.VFLUSH:        "flush",
-	gossh.VSWTCH:        "swtch",
-	gossh.VSTATUS:       "status",
-	gossh.VDISCARD:      "discard",
-	gossh.IGNPAR:        "ignpar",
-	gossh.PARMRK:        "parmrk",
-	gossh.INPCK:         "inpck",
-	gossh.ISTRIP:        "istrip",
-	gossh.INLCR:         "inlcr",
-	gossh.IGNCR:         "igncr",
-	gossh.ICRNL:         "icrnl",
-	gossh.IUCLC:         "iuclc",
-	gossh.IXON:          "ixon",
-	gossh.IXANY:         "ixany",
-	gossh.IXOFF:         "ixoff",
-	gossh.IMAXBEL:       "imaxbel",
-	gossh.IUTF8:         "iutf8",
-	gossh.ISIG:          "isig",
-	gossh.ICANON:        "icanon",
-	gossh.XCASE:         "xcase",
-	gossh.ECHO:          "echo",
-	gossh.ECHOE:         "echoe",
-	gossh.ECHOK:         "echok",
-	gossh.ECHONL:        "echonl",
-	gossh.NOFLSH:        "noflsh",
-	gossh.TOSTOP:        "tostop",
-	gossh.IEXTEN:        "iexten",
-	gossh.ECHOCTL:       "echoctl",
-	gossh.ECHOKE:        "echoke",
-	gossh.PENDIN:        "pendin",
-	gossh.OPOST:         "opost",
-	gossh.OLCUC:         "olcuc",
-	gossh.ONLCR:         "onlcr",
-	gossh.OCRNL:         "ocrnl",
-	gossh.ONOCR:         "onocr",
-	gossh.ONLRET:        "onlret",
-	gossh.CS7:           "cs7",
-	gossh.CS8:           "cs8",
-	gossh.PARENB:        "parenb",
-	gossh.PARODD:        "parodd",
-	gossh.TTY_OP_ISPEED: "tty_op_ispeed",
-	gossh.TTY_OP_OSPEED: "tty_op_ospeed",
 }

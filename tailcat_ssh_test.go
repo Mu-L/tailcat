@@ -1,7 +1,7 @@
 // Copyright (c) Tailscale Inc & contributors
 // SPDX-License-Identifier: BSD-3-Clause
 
-//go:build (linux || darwin) && !ts_omit_ssh
+//go:build (linux || darwin || windows) && !ts_omit_ssh
 
 package tailcat_test
 
@@ -10,6 +10,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -128,10 +129,16 @@ func TestSSHSuite(t *testing.T) {
 		}
 		defer sess.Close()
 
+		// Windows PowerShell 5.1 has no && operator.
+		cmd := "echo out-marker && echo err-marker >&2"
+		if runtime.GOOS == "windows" {
+			cmd = "echo out-marker; [Console]::Error.WriteLine('err-marker')"
+		}
+
 		var stdout, stderr bytes.Buffer
 		sess.Stdout = &stdout
 		sess.Stderr = &stderr
-		if err := sess.Run("echo out-marker && echo err-marker >&2"); err != nil {
+		if err := sess.Run(cmd); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
 		if !strings.Contains(stdout.String(), "out-marker") {
@@ -160,7 +167,11 @@ func TestSSHSuite(t *testing.T) {
 		if err := sess.Setenv("LC_ALL", "test-lc-val"); err != nil {
 			t.Fatalf("Setenv LC_ALL: %v", err)
 		}
-		out, err := sess.Output("echo LANG=$LANG LC_ALL=$LC_ALL")
+		cmd := "echo LANG=$LANG LC_ALL=$LC_ALL"
+		if runtime.GOOS == "windows" {
+			cmd = `echo "LANG=$env:LANG LC_ALL=$env:LC_ALL"`
+		}
+		out, err := sess.Output(cmd)
 		if err != nil {
 			t.Fatalf("Output: %v", err)
 		}
@@ -174,6 +185,9 @@ func TestSSHSuite(t *testing.T) {
 	})
 
 	t.Run("PTYAllocated", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("no tty command or /dev tty names on Windows")
+		}
 		sess, err := env.sshClient(t).NewSession()
 		if err != nil {
 			t.Fatal(err)
@@ -203,11 +217,21 @@ func TestSSHSuite(t *testing.T) {
 		if err := sess.RequestPty("xterm-256color", 24, 80, gossh.TerminalModes{}); err != nil {
 			t.Fatalf("RequestPty: %v", err)
 		}
-		out, err := sess.Output("echo $TERM")
+		cmd := "echo $TERM"
+		if runtime.GOOS == "windows" {
+			cmd = "echo $env:TERM"
+		}
+		out, err := sess.Output(cmd)
 		if err != nil {
 			t.Fatalf("echo TERM: %v", err)
 		}
-		if got := strings.TrimSpace(string(out)); got != "xterm-256color" {
+		if runtime.GOOS == "windows" {
+			// ConPTY output is decorated with VT escape sequences, so
+			// an exact match is not possible.
+			if !strings.Contains(string(out), "xterm-256color") {
+				t.Fatalf("TERM missing from output %q, want %q somewhere", out, "xterm-256color")
+			}
+		} else if got := strings.TrimSpace(string(out)); got != "xterm-256color" {
 			t.Fatalf("TERM = %q, want %q", got, "xterm-256color")
 		}
 	})
@@ -236,8 +260,14 @@ func TestSSHSuite(t *testing.T) {
 			t.Fatalf("Shell: %v", err)
 		}
 
-		io.WriteString(stdin, "echo interactive-marker-12345\n")
-		io.WriteString(stdin, "exit\n")
+		// A real terminal sends \r for Enter, and Windows console
+		// input does not treat a bare \n as a line ending.
+		nl := "\n"
+		if runtime.GOOS == "windows" {
+			nl = "\r"
+		}
+		io.WriteString(stdin, "echo interactive-marker-12345"+nl)
+		io.WriteString(stdin, "exit"+nl)
 
 		if err := sess.Wait(); err != nil {
 			// Shell exit may produce a non-zero status on some systems;
@@ -247,6 +277,54 @@ func TestSSHSuite(t *testing.T) {
 
 		if !strings.Contains(stdout.String(), "interactive-marker-12345") {
 			t.Fatalf("interactive shell output missing marker: %q", stdout.String())
+		}
+	})
+
+	t.Run("CtrlC", func(t *testing.T) {
+		sess, err := env.sshClient(t).NewSession()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+
+		if err := sess.RequestPty("xterm", 24, 80, gossh.TerminalModes{}); err != nil {
+			t.Fatalf("RequestPty: %v", err)
+		}
+		stdin, err := sess.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stdout bytes.Buffer
+		sess.Stdout = &stdout
+		if err := sess.Shell(); err != nil {
+			t.Fatalf("Shell: %v", err)
+		}
+
+		nl := "\n"
+		sleep := "sleep 60"
+		if runtime.GOOS == "windows" {
+			nl = "\r"
+			sleep = "Start-Sleep 60"
+		}
+		io.WriteString(stdin, sleep+nl)
+		time.Sleep(2 * time.Second) // let the sleep start
+		io.WriteString(stdin, "\x03")
+		time.Sleep(1 * time.Second)
+		io.WriteString(stdin, "echo after-intr-ok"+nl)
+		io.WriteString(stdin, "exit"+nl)
+
+		done := make(chan error, 1)
+		go func() { done <- sess.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Logf("Wait: %v (may be expected)", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("session did not exit: ^C did not interrupt the sleep")
+		}
+		if !strings.Contains(stdout.String(), "after-intr-ok") {
+			t.Fatalf("output missing post-interrupt marker: %q", stdout.String())
 		}
 	})
 }

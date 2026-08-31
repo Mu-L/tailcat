@@ -14,8 +14,8 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
-	"syscall"
 
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/logger"
@@ -62,20 +62,27 @@ func clientSSHMode(logf logger.Logf) {
 		sshExe,
 		"-o", "UpdateHostKeys no",
 		"-o", "StrictHostKeyChecking no",
-		"-o", "UserKnownHostsFile /dev/null",
+		"-o", "UserKnownHostsFile " + os.DevNull,
 		"-o", "LogLevel ERROR",
 		"-o", "ProxyCommand=" + sshProxyCommand(exe, *flagKey, *flagDERPMapURL, connBlobStr, portOrIPPort),
 		sshDst,
 	}
 	argv = append(argv, cmdArgs...)
-	err = syscall.Exec(sshExe, argv, os.Environ())
-	log.Fatalf("failed to exec: %v", err)
+	err = execSSH(sshExe, argv)
+	log.Fatalf("failed to run ssh: %v", err)
 }
 
 // sshProxyCommand returns the command passed to OpenSSH to connect the SSH
 // client to a tailcat server. The command is run by OpenSSH, so values that
 // can contain shell-special characters must be quoted.
 func sshProxyCommand(exe, keyName, derpMapURL, connBlob, portOrIPPort string) string {
+	if runtime.GOOS == "windows" {
+		// Plain quotes without Go's %q backslash escaping: the
+		// executable is a Windows path whose backslashes must survive
+		// both cmd.exe (which Win32-OpenSSH uses to run ProxyCommand)
+		// and the child's own command line parsing.
+		exe = "\"" + exe + "\""
+	}
 	cmd := fmt.Sprintf("%s --key=%q", exe, keyName)
 	if derpMapURL != tailcat.DefaultDERPMapURL {
 		cmd += fmt.Sprintf(" --derpmap-url=%q", derpMapURL)

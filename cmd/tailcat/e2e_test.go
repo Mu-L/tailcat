@@ -116,7 +116,8 @@ func cacheEnv(t *testing.T) []string {
 	return []string{
 		"XDG_CACHE_HOME=" + dir, // Linux
 		"HOME=" + dir,           // macOS
-		"LocalAppData=" + dir,   // Windows
+		"LocalAppData=" + dir,   // Windows os.UserCacheDir
+		"AppData=" + dir,        // Windows os.UserConfigDir (SSH host key)
 	}
 }
 
