@@ -56,9 +56,13 @@ $ docker pull ghcr.io/tailscale/tailcat:v0.1.0  # or :latest
 $ docker run --rm -it ghcr.io/tailscale/tailcat:latest
 ```
 
-For macOS, we hope to be in Homebrew soon
-([#28](https://github.com/tailscale/tailcat/issues/28)); until then,
-build from source with a Go toolchain:
+For macOS, install with [Homebrew](https://brew.sh/):
+
+```sh
+$ brew install tailcat
+```
+
+Or build from source with a Go toolchain:
 
 ```sh
 $ go install github.com/tailscale/tailcat/cmd/tailcat@latest
