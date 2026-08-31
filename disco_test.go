@@ -103,6 +103,10 @@ func TestIsMeowedPacket(t *testing.T) {
 // packets arrive over DERP from unauthenticated senders.
 func TestParseMeowPingMalformed(t *testing.T) {
 	full := EncodeMeowPing(key.NewNode().Public(), key.NewDisco().Public())
+	zeroDisco := EncodeMeowPing(key.NewNode().Public(), key.DiscoPublic{})
+	if len(zeroDisco) != 69 {
+		t.Fatalf("zero-disco meow is %d bytes; want 69", len(zeroDisco))
+	}
 
 	tests := []struct {
 		name string
@@ -115,6 +119,7 @@ func TestParseMeowPingMalformed(t *testing.T) {
 		{"unknown_type", append([]byte("meow\x7f"), full[5:]...)},
 		{"truncated_node_key", full[:5+key.NodePublicRawLen-1]},
 		{"truncated_disco_key", full[:len(full)-1]},
+		{"zero_disco_key", zeroDisco},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

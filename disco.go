@@ -56,8 +56,11 @@ func ParseMeowPing(pkt []byte) (nodeKey key.NodePublic, discoKey key.DiscoPublic
 	if pkt[4] != meowTypePing {
 		return nodeKey, discoKey, false
 	}
-	nodeKey = key.NodePublicFromRaw32(mem.B(pkt[5 : 5+key.NodePublicRawLen]))
 	discoKey = key.DiscoPublicFromRaw32(mem.B(pkt[5+key.NodePublicRawLen : 5+key.NodePublicRawLen+key.DiscoPublicRawLen]))
+	if discoKey.IsZero() {
+		return key.NodePublic{}, key.DiscoPublic{}, false
+	}
+	nodeKey = key.NodePublicFromRaw32(mem.B(pkt[5 : 5+key.NodePublicRawLen]))
 	return nodeKey, discoKey, true
 }
 
