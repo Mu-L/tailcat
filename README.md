@@ -192,8 +192,12 @@ $ tailcat serve --files=/pub:rw files  # a given directory, read-write
 ```
 
 ```sh
+$ tailcat ls -l tcXXXXXXXXX
 $ tailcat cp tcXXXXXXXXX:report.pdf .
 ```
+
+`tailcat ls` speaks SFTP natively, so it works even without OpenSSH
+installed.
 
 The server confines all paths to the served directory (via Go's
 `os.Root`), so neither `..` nor symlinks escape it. The file service

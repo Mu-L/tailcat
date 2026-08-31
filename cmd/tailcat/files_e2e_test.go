@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,6 +44,42 @@ func runSFTPBatch(t *testing.T, e *testEnv, blob, batch string) ([]byte, error) 
 	out, err := cmd.CombinedOutput()
 	close(done)
 	return out, err
+}
+
+// TestLS lists a read-only file server with the native ls
+// subcommand, which needs no OpenSSH binaries.
+func TestLS(t *testing.T) {
+	e := newTestEnv(t)
+
+	serveDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(serveDir, "hello.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(serveDir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serveDir, "sub", "inner.txt"), []byte("inner"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, blob, _ := e.startServer("serve", "--files="+serveDir)
+
+	out, err := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "ls", blob).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ls: %v\n%s", err, out)
+	}
+	if got, want := string(out), "hello.txt\nsub/\n"; got != want {
+		t.Errorf("ls output = %q; want %q", got, want)
+	}
+
+	out, err = e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "ls", "-l", blob+":sub").CombinedOutput()
+	if err != nil {
+		t.Fatalf("ls -l: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "inner.txt") || !strings.Contains(s, "-rw-") {
+		t.Errorf("ls -l output = %q; want a long listing of inner.txt", s)
+	}
 }
 
 // TestServeFiles runs a read-only file server for a directory and

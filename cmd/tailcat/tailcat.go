@@ -191,6 +191,7 @@ func newRootCommand() *ff.Command {
 			},
 			sshCommand(rootFS),
 			cpCommand(rootFS),
+			lsCommand(rootFS),
 			{
 				Name:      "parse",
 				Usage:     "tailcat parse <addrblob>",
@@ -329,6 +330,10 @@ and serve's files service):
 
 	tailcat cp foo.txt <addrblob>:
 	tailcat cp -r <addrblob>:dir ./dir
+
+Client mode, list the files a server offers:
+
+	tailcat ls [-l] <addrblob>[:path]
 
 Client mode, run an ephemeral SOCKS5 proxy and pass its address
 as 'all_proxy' environment variable to a child process. Destination
