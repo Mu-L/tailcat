@@ -37,6 +37,15 @@ func TestSSHProxyCommandDERPMap(t *testing.T) {
 	if got != want {
 		t.Errorf("sshProxyCommand with default DERP map = %q; want %q", got, want)
 	}
+
+	// No --key flag at all when unset. The shell would collapse
+	// --key="" to --key=, which ff parses by consuming the next
+	// argument, the address blob.
+	got = sshProxyCommand(exe, "", tailcat.DefaultDERPMapURL, blob, port)
+	want = wantExe + ` tc-short-blob 22`
+	if got != want {
+		t.Errorf("sshProxyCommand with no key = %q; want %q", got, want)
+	}
 }
 
 func TestSSHDestHost(t *testing.T) {

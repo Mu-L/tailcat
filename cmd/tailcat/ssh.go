@@ -114,7 +114,13 @@ func sshProxyCommand(exe, keyName, derpMapURL, connBlob, portOrIPPort string) st
 		// and the child's own command line parsing.
 		exe = "\"" + exe + "\""
 	}
-	cmd := fmt.Sprintf("%s --key=%q", exe, keyName)
+	cmd := exe
+	// No --key flag at all when unset: the shell turns --key="" into
+	// --key=, which ff parses by consuming the next argument (the
+	// address blob) as the flag's value.
+	if keyName != "" {
+		cmd += fmt.Sprintf(" --key=%q", keyName)
+	}
 	if derpMapURL != tailcat.DefaultDERPMapURL {
 		cmd += fmt.Sprintf(" --derpmap-url=%q", derpMapURL)
 	}
