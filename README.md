@@ -163,6 +163,51 @@ $ tailcat ssh tcXXXXXXXXX
 $ tailcat ssh tcXXXXXXXXX ls -la
 ```
 
+### Send and receive files
+
+To receive files, run a drop box and share the printed address:
+
+```sh
+$ tailcat recv ~/inbox
+# 🐈 Server listening with new address: tcXXXXXXXXX
+```
+
+The sender then runs:
+
+```sh
+$ tailcat cp report.pdf tcXXXXXXXXX:
+```
+
+`tailcat cp` runs the system `scp` with the connection routed through
+tailcat, so you get its usual progress display, and `-r` for
+directory trees. The drop box is write-only: senders can't list the
+directory, read anything back, or touch existing files.
+
+To offer files instead, serve a directory read-only (the default) or
+read-write:
+
+```sh
+$ tailcat serve files                  # current directory, read-only
+$ tailcat serve --files=/pub:rw files  # a given directory, read-write
+```
+
+```sh
+$ tailcat cp tcXXXXXXXXX:report.pdf .
+```
+
+The server confines all paths to the served directory (via Go's
+`os.Root`), so neither `..` nor symlinks escape it. The file service
+speaks SFTP, so the stock `sftp` and `scp` clients also work against
+it, given a ProxyCommand that pipes through tailcat (the same trick
+`tailcat cp` and `tailcat ssh` use). A `no-auth-ssh` server serves
+SFTP too, with the same access as the shell.
+
+Transfers are not compressed: the SFTP protocol has no compression
+of its own, and the SSH transport here doesn't either (Go's SSH
+stack omits it; transport compression has a history of security
+problems, and TLS dropped it too). Compress files before sending
+if it matters.
+
 ### Misc commands 
 
 Ping to test connectivity; each pong reports whether it arrived via a
