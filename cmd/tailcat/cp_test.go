@@ -59,6 +59,43 @@ func TestCPUsageErrors(t *testing.T) {
 	}
 }
 
+// TestRecvDropBox copies a file into a "tailcat recv" server and
+// checks that it lands, that a second copy of another name works,
+// and that reading anything back is refused (write-only drop box).
+func TestRecvDropBox(t *testing.T) {
+	if _, err := exec.LookPath("scp"); err != nil {
+		t.Skipf("no scp in $PATH: %v", err)
+	}
+	e := newTestEnv(t)
+
+	recvDir := t.TempDir()
+	_, blob, _ := e.startServer("recv", recvDir)
+
+	src := filepath.Join(t.TempDir(), "gift.txt")
+	const content = "drop box content"
+	if err := os.WriteFile(src, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", src, blob+":").CombinedOutput()
+	if err != nil {
+		t.Fatalf("cp into recv: %v\n%s", err, out)
+	}
+	v, err := os.ReadFile(filepath.Join(recvDir, "gift.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(v) != content {
+		t.Errorf("received content = %q; want %q", v, content)
+	}
+
+	back := filepath.Join(t.TempDir(), "back.txt")
+	out, err = e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", blob+":gift.txt", back).CombinedOutput()
+	if err == nil {
+		t.Errorf("cp out of a write-only drop box succeeded:\n%s", out)
+	}
+}
+
 // TestCPRoundTrip copies a file to a read-write file server with
 // "tailcat cp" (which runs the system scp) and fetches it back.
 func TestCPRoundTrip(t *testing.T) {

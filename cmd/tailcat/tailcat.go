@@ -99,6 +99,8 @@ func newRootCommand() *ff.Command {
 	flagFullAddress = serveFS.BoolLong("full-address", "print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
 	flagFiles = serveFS.StringLong("files", "", "directory to serve to SFTP clients (scp, sftp) with the 'files' service, with an optional :ro (read-only, the default), :rw (read-write), or :wo (write-only drop box) suffix. If empty, the current directory is served read-only. Giving --files implies the 'files' service.")
 
+	recvFS := ff.NewFlagSet("recv").SetParent(serveFS)
+
 	pingFS := ff.NewFlagSet("ping").SetParent(rootFS)
 	pingUntilDirect := pingFS.BoolLong("until-direct", "keep pinging until a pong arrives over a direct (non-DERP) path; exit non-zero if that doesn't happen before --timeout")
 	pingTimeout := pingFS.DurationLong("timeout", 10*time.Second, "give up after this long")
@@ -163,6 +165,28 @@ func newRootCommand() *ff.Command {
 				Flags:     socksFS,
 				Exec: func(ctx context.Context, args []string) error {
 					return clientSOCKSMode(getLogf(), *socksListen, args)
+				},
+			},
+			{
+				Name:      "recv",
+				Usage:     "tailcat recv [flags] [<dir>]",
+				ShortHelp: "receive files: serve a directory as a write-only drop box",
+				LongHelp:  recvLongHelp,
+				Flags:     recvFS,
+				Exec: func(ctx context.Context, args []string) error {
+					if len(args) > 1 {
+						return usagef("recv takes at most one directory argument")
+					}
+					if *flagFiles != "" {
+						return usagef("recv takes the directory as an argument, not --files")
+					}
+					dir := "."
+					if len(args) == 1 {
+						dir = args[0]
+					}
+					*flagFiles = dir + ":wo"
+					server(getLogf(), "")
+					return nil
 				},
 			},
 			sshCommand(rootFS),
@@ -265,6 +289,11 @@ password or public key):
 Server mode, exit node (clients can reach the server's whole network):
 
 	tailcat serve exit-node
+
+Server mode, receive files into a directory (a write-only drop box
+served to "tailcat cp"; see also serve's files service):
+
+	tailcat recv ~/inbox
 
 Client mode, to default port 1 for stdin/stdout pipe:
 
@@ -410,6 +439,25 @@ Environment:
 
 	TAILCAT_ADDR_FILE: write the address blob to the given file
 	path or, with a "tcp:" prefix, send it to that TCP address.`
+
+const recvLongHelp = `Run a server that receives files into the given directory (default:
+the current directory), printing the address blob senders use. It's
+shorthand for a write-only file server:
+
+	tailcat serve --files=<dir>:wo files
+
+The sender copies files in with (see "tailcat cp --help"):
+
+	tailcat cp foo.txt <addrblob>:
+
+Write-only means senders can't list the directory, read anything
+back, or touch existing files, so the address blob only grants
+dropping files off.
+
+Receive into the current directory, or into a given one:
+
+	tailcat recv
+	tailcat recv ~/inbox`
 
 const pingLongHelp = `Examples:
 

@@ -20,8 +20,8 @@ import (
 func TestHelpListsCommandTree(t *testing.T) {
 	help := ffhelp.Command(newRootCommand()).String()
 	for _, want := range []string{
-		"serve", "ping", "socks", "ssh", "parse", "resolve", "genkey",
-		"printpub", "version", "readme",
+		"serve", "recv", "ping", "socks", "ssh", "cp", "parse", "resolve",
+		"genkey", "printpub", "version", "readme",
 		"--serve", "--key", "--derpmap-url",
 	} {
 		if !strings.Contains(help, want) {
