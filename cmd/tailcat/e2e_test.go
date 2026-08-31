@@ -95,6 +95,22 @@ func buildTailcatBinary(dir string) error {
 	return nil
 }
 
+// TestVersionFlag verifies that "tailcat --version" works even though
+// --version is not a registered flag; main special-cases it on parse
+// failure. The advertised interface is the version subcommand, but
+// nixpkgs' versionCheckHook runs "tailcat --version" and depends on
+// its exit status and output.
+func TestVersionFlag(t *testing.T) {
+	bin := buildTailcat(t)
+	out, err := exec.Command(bin, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("tailcat --version: %v\n%s", err, out)
+	}
+	if v := strings.TrimSpace(string(out)); v == "" || strings.Contains(v, "\n") {
+		t.Errorf("output = %q; want a single non-empty version line", out)
+	}
+}
+
 // testNoopCommand returns a child command that exits successfully,
 // for tests that only care that a wrapper ran it. Windows has no
 // "true" binary.

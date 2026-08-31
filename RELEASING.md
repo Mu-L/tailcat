@@ -44,7 +44,7 @@ both `vX.Y.Z` and `latest`. The image is the static binary in a
 image; see `Dockerfile.goreleaser`.
 
 The binary version is embedded at build time via `-ldflags -X
-main.version=...`; `tailcat --version` prints it. Builds made with
+main.version=...`; `tailcat version` prints it. Builds made with
 `go install github.com/tailscale/tailcat/cmd/tailcat@vX.Y.Z` instead
 report the module version from the Go build info.
 
