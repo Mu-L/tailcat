@@ -23,6 +23,27 @@ import (
 
 const tailCatSSHEnabled = true
 
+const sshLongHelp = `Examples:
+
+	tailcat ssh <addrblob>
+	tailcat ssh root@<addrblob>
+	tailcat ssh <addrblob> uptime
+	tailcat ssh example.com
+	tailcat ssh -p 2222 <addrblob>
+	tailcat ssh -p 10.0.0.1:22 <addrblob>
+
+This execs the system ssh client with a ProxyCommand that runs
+tailcat itself, so ssh sees a normal (if oddly named) destination
+while the connection actually goes over tailcat to the server.
+Anything after the destination is passed through to ssh, like a
+remote command to run.
+A DNS name whose "tailcat=" TXT record holds an address blob works
+as the destination too.
+
+The -p flag is the server port to connect to (default 22), or, if
+the server is an exit node (--serve=exit-node), an ip:port on the
+server's network to reach through it; a bare IP means its port 22.`
+
 // sshCommand returns the "tailcat ssh" subcommand, with parent as the
 // parent flag set for the global flags.
 func sshCommand(parent *ff.FlagSet) *ff.Command {
@@ -32,6 +53,7 @@ func sshCommand(parent *ff.FlagSet) *ff.Command {
 		Name:      "ssh",
 		Usage:     "tailcat ssh [-p <port|ip:port>] [user@]<addrblob> [<command> [args...]]",
 		ShortHelp: "connect the system ssh client through a tailcat server",
+		LongHelp:  sshLongHelp,
 		Flags:     fs,
 		Exec: func(ctx context.Context, args []string) error {
 			return clientSSHMode(*port, args)

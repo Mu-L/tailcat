@@ -127,6 +127,7 @@ func newRootCommand() *ff.Command {
 				Name:      "ping",
 				Usage:     "tailcat ping [--until-direct] [--timeout=10s] <addrblob>",
 				ShortHelp: "ping a server, reporting DERP or direct paths",
+				LongHelp:  pingLongHelp,
 				Flags:     pingFS,
 				Exec: func(ctx context.Context, args []string) error {
 					return clientPingMode(getLogf(), *pingUntilDirect, *pingTimeout, args)
@@ -136,6 +137,7 @@ func newRootCommand() *ff.Command {
 				Name:      "socks",
 				Usage:     "tailcat socks [--listen=<addr:port>] [<addrblob>] [<cmd> [args...]]",
 				ShortHelp: "run a SOCKS5 proxy that dials tailcat servers",
+				LongHelp:  socksLongHelp,
 				Flags:     socksFS,
 				Exec: func(ctx context.Context, args []string) error {
 					return clientSOCKSMode(getLogf(), *socksListen, args)
@@ -162,6 +164,7 @@ func newRootCommand() *ff.Command {
 				Name:      "genkey",
 				Usage:     "tailcat genkey --key=<name> [--client] [--force] [--list] [--delete]",
 				ShortHelp: "generate, list, or delete saved keys",
+				LongHelp:  genkeyLongHelp,
 				Flags:     genkeyFS,
 				Exec: func(ctx context.Context, args []string) error {
 					return genKey(args)
@@ -320,6 +323,83 @@ Environment:
 	TAILCAT_ADDR_FILE: in server mode, write the address blob to the
 	given file path or, with a "tcp:" prefix, send it to that TCP
 	address.`
+
+const pingLongHelp = `Examples:
+
+	tailcat ping <addrblob>
+	tailcat ping --until-direct <addrblob>
+	tailcat ping --until-direct --timeout=30s <addrblob>
+
+Each pong reports whether it arrived via a DERP relay or a direct
+path:
+
+	pong in 42.1ms via DERP(sfo)
+	pong in 1.2ms via 203.0.113.7:41641
+
+The --until-direct flag keeps pinging (bounded by --timeout) until a
+direct path works, exiting non-zero if none does, so scripts can use
+it to verify NAT traversal.`
+
+const socksLongHelp = `Examples:
+
+	tailcat socks
+	tailcat socks <addrblob>
+	tailcat socks --listen=1080 <addrblob>
+	tailcat socks curl http://<addrblob>:8081/
+	tailcat socks <addrblob> curl http://server.tailcat:8081/
+	tailcat socks <addrblob> curl https://example.com/
+
+With a <cmd>, the SOCKS5 proxy runs for the life of that command,
+which is started with the proxy's address in its all_proxy
+environment variable (respected by curl and most CLI tools). With no
+<cmd>, the proxy runs by itself and prints its address.
+
+The proxy routes each connection by its destination hostname:
+
+A hostname that is itself an address blob names a tailcat server to
+dial, so blobs work directly in URLs and the <addrblob> argument
+isn't needed. (Blobs are case-sensitive; this works with CLI tools
+but not with browsers, which lowercase hostnames.)
+
+The magic hostname "server.tailcat" means the server named by the
+<addrblob> argument.
+
+Any other hostname or IP is reached through the <addrblob> server
+acting as an exit node, which works only if the server runs with
+--serve=exit-node.
+
+The --listen flag sets the proxy's listen address: a bare port means
+localhost on that port, a bare address means an OS-assigned port,
+and an empty host (as in ":1080") means all interfaces.`
+
+const genkeyLongHelp = `Examples:
+
+	tailcat genkey --key=default
+	tailcat genkey --client --key=client-default
+	tailcat genkey --key=default --fixed-region
+	tailcat genkey --key=default --region=nyc
+	tailcat genkey --key=default --region=derp.example.com
+	tailcat genkey --region=list
+	tailcat genkey --list
+	tailcat genkey --delete --key=<name>
+
+By default genkey generates and saves a server key and prints its
+address blob. The key name "default" is magic: server mode loads it
+automatically once it exists. Any other name works too, named at
+serve time with --key=<name>, to keep multiple identities.
+
+With --client, genkey generates a client identity key and prints its
+public key, for use in a server's --allow list. Client modes
+automatically load the magic name "client-default" once it exists.
+
+A server key normally picks its DERP relay region by latency at each
+server startup (--region=auto). The --region and --fixed-region
+flags bake a region into the key and its address blob instead; an
+address blob published in DNS should do that, so clients and future
+server restarts all rendezvous in the same place. --region takes a
+region ID, code, or name substring ("list" prints the choices), or
+one or more comma-separated DERP server hostnames to use relays that
+aren't in the DERP map at all.`
 
 // version is set via -ldflags by GoReleaser at release time.
 // It is empty for go-install and plain go-build builds.
@@ -1216,7 +1296,7 @@ func genKey(args []string) error {
 		}
 		return os.Remove(keyPath(*key))
 	}
-	if *key == "" {
+	if *key == "" && *region != "list" {
 		if *client {
 			return usagef("genkey requires a --key=<name>; client modes automatically load the key named \"client-default\" when it exists, making it the usual choice")
 		}
