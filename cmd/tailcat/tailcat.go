@@ -53,6 +53,7 @@ var (
 	flagServe       *string
 	flagKey         *string
 	flagAllow       *string
+	flagFiles       *string
 	flagVerbose     *bool
 	flagVersion     *bool
 	flagFullAddress *bool
@@ -86,7 +87,7 @@ func getLogf() logger.Logf {
 // package-level flag value pointers.
 func newRootCommand() *ff.Command {
 	rootFS := ff.NewFlagSet("tailcat")
-	flagServe = rootFS.StringLong("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve; the same list the serve subcommand takes as arguments. Service names are: 'all' (serve all ports), 'exit-node' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it accepts a single connection on any port, writes it to stdout, and exits.")
+	flagServe = rootFS.StringLong("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve; the same list the serve subcommand takes as arguments. Service names are: 'all' (serve all ports), 'exit-node' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server), 'files' (file server for SFTP clients; see serve's --files flag). If empty, it accepts a single connection on any port, writes it to stdout, and exits.")
 	flagKey = rootFS.StringLong("key", "", "'new' for an ephemeral key. If empty, the default saved key is used if it exists ('default' in server mode, 'client-default' in client modes; see genkey), else an ephemeral key. Otherwise the path to a *.private.json or a name like 'foo' to read it from $CONFIG/tailcat/keys/foo.private.json")
 	flagVerbose = rootFS.BoolLong("verbose", "be verbose")
 	flagVersion = rootFS.BoolLong("version", "print the tailcat version and exit")
@@ -96,6 +97,7 @@ func newRootCommand() *ff.Command {
 	serveFS := ff.NewFlagSet("serve").SetParent(rootFS)
 	flagAllow = serveFS.StringLong("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
 	flagFullAddress = serveFS.BoolLong("full-address", "print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
+	flagFiles = serveFS.StringLong("files", "", "directory to serve to SFTP clients (scp, sftp) with the 'files' service, with an optional :ro (read-only, the default), :rw (read-write), or :wo (write-only drop box) suffix. If empty, the current directory is served read-only. Giving --files implies the 'files' service.")
 
 	pingFS := ff.NewFlagSet("ping").SetParent(rootFS)
 	pingUntilDirect := pingFS.BoolLong("until-direct", "keep pinging until a pong arrives over a direct (non-DERP) path; exit non-zero if that doesn't happen before --timeout")
@@ -355,6 +357,9 @@ to the same port on localhost. Service names are:
 	all          serve all ports
 	exit-node    run an exit node for all addresses
 	no-auth-ssh  auth-free SSH server (the tunnel provides identity)
+	files        file server for SFTP clients like scp and sftp,
+	             rooted in the --files directory (default: the
+	             current directory, read-only)
 
 With no arguments, the server accepts a single connection on any
 port, writes it to stdout, and exits.
@@ -380,6 +385,15 @@ Serve a port and the auth-free SSH server:
 Run an exit node (clients can reach the server's whole network):
 
 	tailcat serve exit-node
+
+Serve the current directory read-only to scp and sftp clients:
+
+	tailcat serve files
+
+Serve a directory read-write, or another as a write-only drop box:
+
+	tailcat serve --files=/pub:rw files
+	tailcat serve --files=/inbox:wo files
 
 Serve with a saved key (see genkey) and restrict clients:
 
@@ -978,6 +992,18 @@ func server(logf logger.Logf, serveSpec string) {
 	if err != nil {
 		log.Fatalf("invalid port or service to serve: %v", err)
 	}
+	if *flagFiles != "" {
+		if !tailCatSSHEnabled {
+			log.Fatalf("--files requires SSH support, not included in binary per build tags")
+		}
+		if services == nil {
+			services = set.Set[string]{}
+		}
+		services.Add("files")
+	}
+	// A server running only named services isn't the empty-port-list
+	// accept-one-connection stdout mode.
+	oneShotStdout := len(portSet) == 0 && len(services) == 0
 
 	var reg *tailcfg.DERPRegion
 	var devDERP *derpserver.Server
@@ -1047,16 +1073,16 @@ func server(logf logger.Logf, serveSpec string) {
 	connStr := ci.ConnBlob()
 
 	s := &tailcat.Server{Key: priv, Logf: logf, Region: reg}
-	if services.Contains("no-auth-ssh") && !tailcat.SupportsSSHServer() {
+	sshServices := services.Contains("no-auth-ssh") || services.Contains("files")
+	if sshServices && !tailcat.SupportsSSHServer() {
 		log.Fatalf("Tailscale SSH server not supported on %v", runtime.GOOS)
 	}
-	// With an explicit port list (and no exit-node mode, which accepts
-	// any port), tighten the packet filter to just those ports for
-	// defense in depth behind the OnTCP gate. An empty port list means
-	// the accept-one-connection-on-any-port stdout mode.
-	if len(portSet) > 0 && !services.Contains("exit-node") {
+	// Outside the accept-one-connection stdout mode (and exit-node
+	// mode, which accepts any port), tighten the packet filter to just
+	// the served ports for defense in depth behind the OnTCP gate.
+	if !oneShotStdout && !services.Contains("exit-node") {
 		ports := slices.Sorted(maps.Keys(portSet))
-		if services.Contains("no-auth-ssh") && !portSet.Contains(22) {
+		if sshServices && !portSet.Contains(22) {
 			ports = append([]uint16{22}, ports...)
 		}
 		s.ServedTCPPorts = portRanges(ports)
@@ -1093,16 +1119,30 @@ func server(logf logger.Logf, serveSpec string) {
 		}
 	}
 
+	var sshHandler func(net.Conn)
+	if sshServices {
+		opts := tailcat.SSHOptions{Shell: services.Contains("no-auth-ssh")}
+		if services.Contains("files") {
+			fsrv, modeName, err := parseFilesFlag(*flagFiles)
+			if err != nil {
+				log.Fatal(err)
+			}
+			opts.Files = fsrv
+			fmt.Fprintf(os.Stderr, "# Serving files from %v (%v)\n", fsrv.Dir, modeName)
+		}
+		sshHandler = s.SSHConnHandler(opts)
+	}
+
 	s.OnTCP = func(port uint16) (handler func(net.Conn)) {
-		if port == 22 && services.Contains("no-auth-ssh") && tailCatSSHEnabled {
-			return s.HandleTailscaleSSHConn
+		if port == 22 && sshHandler != nil {
+			return sshHandler
 		}
 		if services.Contains("exit-node") {
 			// Being an exit node includes localhost without needing
 			// to specify all the local port ranges.
 			return tcpForwardTo(fmt.Sprintf("localhost:%v", port))
 		}
-		if len(portSet) == 0 {
+		if oneShotStdout {
 			return func(c net.Conn) {
 				_, err := io.Copy(os.Stdout, c)
 				if err != nil {
@@ -1183,6 +1223,37 @@ func server(logf logger.Logf, serveSpec string) {
 	select {}
 }
 
+// parseFilesFlag parses the --files flag value: a directory with an
+// optional :ro, :rw, or :wo suffix. An empty value means the current
+// directory, read-only. It returns the file service and the mode's
+// human-readable name.
+func parseFilesFlag(v string) (*tailcat.FileService, string, error) {
+	mode, modeName := tailcat.FileServeRO, "read-only"
+	dir := v
+	if d, ok := strings.CutSuffix(v, ":ro"); ok {
+		dir = d
+	} else if d, ok := strings.CutSuffix(v, ":rw"); ok {
+		dir, mode, modeName = d, tailcat.FileServeRW, "read-write"
+	} else if d, ok := strings.CutSuffix(v, ":wo"); ok {
+		dir, mode, modeName = d, tailcat.FileServeWO, "write-only"
+	}
+	if dir == "" {
+		dir = "."
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, "", err
+	}
+	fi, err := os.Stat(abs)
+	if err != nil {
+		return nil, "", fmt.Errorf("--files: %w", err)
+	}
+	if !fi.IsDir() {
+		return nil, "", fmt.Errorf("--files: %v is not a directory", abs)
+	}
+	return &tailcat.FileService{Dir: abs, Mode: mode}, modeName, nil
+}
+
 var (
 	portRangeRx = regexp.MustCompile(`^\d+-\d+$`)
 	numRx       = regexp.MustCompile(`^\d+$`)
@@ -1204,7 +1275,7 @@ func parsePortSet(s string) (ports set.Set[uint16], services set.Set[string], _ 
 				ret.Add(uint16(i))
 			}
 			continue
-		case "no-auth-ssh":
+		case "no-auth-ssh", "files":
 			if !tailCatSSHEnabled {
 				return nil, nil, fmt.Errorf("SSH support not included in binary per build tags")
 			}
@@ -1215,7 +1286,7 @@ func parsePortSet(s string) (ports set.Set[uint16], services set.Set[string], _ 
 			continue
 		}
 		if !numRx.MatchString(r) && !portRangeRx.MatchString(r) {
-			return nil, nil, fmt.Errorf("%q is not a known named service (want one of: all, no-auth-ssh, exit-node)", r)
+			return nil, nil, fmt.Errorf("%q is not a known named service (want one of: all, no-auth-ssh, files, exit-node)", r)
 		}
 		a, b := r, ""
 		if portRangeRx.MatchString(r) {
