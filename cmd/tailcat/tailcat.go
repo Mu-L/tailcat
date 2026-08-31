@@ -86,14 +86,16 @@ func getLogf() logger.Logf {
 // package-level flag value pointers.
 func newRootCommand() *ff.Command {
 	rootFS := ff.NewFlagSet("tailcat")
-	flagServe = rootFS.StringLong("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve. Service names are: 'all' (serve all ports), 'exit-node' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it accepts a single connection on any port, writes it to stdout, and exits.")
+	flagServe = rootFS.StringLong("serve", "", "comma-separated list of port numbers, port ranges, or service names to serve; the same list the serve subcommand takes as arguments. Service names are: 'all' (serve all ports), 'exit-node' (run an exit node for all addresses), 'no-auth-ssh' (auth-free SSH server). If empty, it accepts a single connection on any port, writes it to stdout, and exits.")
 	flagKey = rootFS.StringLong("key", "", "'new' for an ephemeral key. If empty, the default saved key is used if it exists ('default' in server mode, 'client-default' in client modes; see genkey), else an ephemeral key. Otherwise the path to a *.private.json or a name like 'foo' to read it from $CONFIG/tailcat/keys/foo.private.json")
-	flagAllow = rootFS.StringLong("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
 	flagVerbose = rootFS.BoolLong("verbose", "be verbose")
 	flagVersion = rootFS.BoolLong("version", "print the tailcat version and exit")
-	flagFullAddress = rootFS.BoolLong("full-address", "in server mode, print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
 	flagJSON = rootFS.BoolLong("json", "in server mode, write {\"listenAddr\": ...} JSON to stdout")
 	flagDERPMapURL = rootFS.StringLong("derpmap-url", tailcat.DefaultDERPMapURL, "URL of the JSON DERP map used to resolve or auto-select a DERP region")
+
+	serveFS := ff.NewFlagSet("serve").SetParent(rootFS)
+	flagAllow = serveFS.StringLong("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
+	flagFullAddress = serveFS.BoolLong("full-address", "print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
 
 	pingFS := ff.NewFlagSet("ping").SetParent(rootFS)
 	pingUntilDirect := pingFS.BoolLong("until-direct", "keep pinging until a pong arrives over a direct (non-DERP) path; exit non-zero if that doesn't happen before --timeout")
@@ -123,6 +125,24 @@ func newRootCommand() *ff.Command {
 		LongHelp:  rootLongHelp,
 		Flags:     rootFS,
 		Subcommands: []*ff.Command{
+			{
+				Name:      "serve",
+				Usage:     "tailcat serve [flags] [<port,service,...> ...]",
+				ShortHelp: "run a server (the default when tailcat is run with no arguments)",
+				LongHelp:  serveLongHelp,
+				Flags:     serveFS,
+				Exec: func(ctx context.Context, args []string) error {
+					spec := *flagServe
+					if len(args) > 0 {
+						if spec != "" {
+							return usagef("use either --serve or positional port/service arguments, not both")
+						}
+						spec = strings.Join(args, ",")
+					}
+					server(getLogf(), spec)
+					return nil
+				},
+			},
 			{
 				Name:      "ping",
 				Usage:     "tailcat ping [--until-direct] [--timeout=10s] <addrblob>",
@@ -207,7 +227,7 @@ func newRootCommand() *ff.Command {
 				return usagef("no positional arguments are valid along with --serve")
 			}
 			if serverMode {
-				server(getLogf())
+				server(getLogf(), *flagServe)
 				return nil
 			}
 			if len(args) > 2 {
@@ -226,22 +246,22 @@ const rootLongHelp = `Server mode, accept one connection (any port), write to st
 
 	tailcat
 
-Server mode, given ports:
+Server mode, given ports (see "tailcat serve --help" for more):
 
-	tailcat --serve=22,80,443,8000-8999
+	tailcat serve 22,80,443,8000-8999
 
 Server mode, all ports:
 
-	tailcat --serve=all
+	tailcat serve all
 
 Server mode, certain ports and Tailscale SSH (auth without
 password or public key):
 
-	tailcat --serve=80,no-auth-ssh
+	tailcat serve 80,no-auth-ssh
 
 Server mode, exit node (clients can reach the server's whole network):
 
-	tailcat --serve=exit-node
+	tailcat serve exit-node
 
 Client mode, to default port 1 for stdin/stdout pipe:
 
@@ -289,7 +309,7 @@ Parse an address blob and print its encoded fields as JSON:
 	tailcat parse <addrblob>
 
 Resolve a short address blob into a longer self-contained one with
-embedded DERP server info (see also the server's --full-address flag):
+embedded DERP server info (see also serve's --full-address flag):
 
 	tailcat resolve <addrblob>
 
@@ -323,6 +343,52 @@ Environment:
 	TAILCAT_ADDR_FILE: in server mode, write the address blob to the
 	given file path or, with a "tcp:" prefix, send it to that TCP
 	address.`
+
+const serveLongHelp = `Run a tailcat server, printing its address blob for clients to
+connect to. Running tailcat with no arguments is the same as running
+"tailcat serve" with no arguments.
+
+The arguments are port numbers, port ranges, and service names,
+either as separate arguments or comma-separated. Ports are proxied
+to the same port on localhost. Service names are:
+
+	all          serve all ports
+	exit-node    run an exit node for all addresses
+	no-auth-ssh  auth-free SSH server (the tunnel provides identity)
+
+With no arguments, the server accepts a single connection on any
+port, writes it to stdout, and exits.
+
+Flags must come before the port and service arguments.
+
+Accept one connection, write it to stdout:
+
+	tailcat serve
+
+Serve some ports:
+
+	tailcat serve 22,80,443,8000-8999
+
+Serve all ports:
+
+	tailcat serve all
+
+Serve a port and the auth-free SSH server:
+
+	tailcat serve 80,no-auth-ssh
+
+Run an exit node (clients can reach the server's whole network):
+
+	tailcat serve exit-node
+
+Serve with a saved key (see genkey) and restrict clients:
+
+	tailcat serve --key=default --allow=nodekey:... 22
+
+Environment:
+
+	TAILCAT_ADDR_FILE: write the address blob to the given file
+	path or, with a "tcp:" prefix, send it to that TCP address.`
 
 const pingLongHelp = `Examples:
 
@@ -453,6 +519,19 @@ func main() {
 		// command if none was.
 		ffhelp.Command(root).WriteTo(os.Stdout)
 		os.Exit(0)
+	}
+	// A trailing --serve with no value is almost certainly someone
+	// asking what serving does, and ff's "missing value" error names
+	// neither the flag nor a fix. Treat it as a request for the serve
+	// subcommand's help. (A missing flag value can only be at the end
+	// of the arguments, so checking the last one suffices.)
+	if strings.Contains(err.Error(), "missing value") && os.Args[len(os.Args)-1] == "--serve" {
+		for _, sub := range root.Subcommands {
+			if sub.Name == "serve" {
+				ffhelp.Command(sub).WriteTo(os.Stdout)
+				os.Exit(0)
+			}
+		}
 	}
 	// Usage errors (including unknown flags) get the same help text
 	// as "tailcat <cmd> --help", with the error last, where it's
@@ -894,10 +973,10 @@ func clientResolveMode(args []string) error {
 	return nil
 }
 
-func server(logf logger.Logf) {
-	portSet, services, err := parsePortSet(*flagServe)
+func server(logf logger.Logf, serveSpec string) {
+	portSet, services, err := parsePortSet(serveSpec)
 	if err != nil {
-		log.Fatalf("invalid value in --serve: %v", err)
+		log.Fatalf("invalid port or service to serve: %v", err)
 	}
 
 	var reg *tailcfg.DERPRegion

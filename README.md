@@ -132,7 +132,7 @@ $
 Or you can serve a local TCP port, forwarded to localhost:
 
 ```sh
-$ tailcat --serve=8080,8443 # or --serve=all
+$ tailcat serve 8080,8443 # or: tailcat serve all
 # 🐈 Server listening with new address: tcXXXXXXXXX
 ```
 
@@ -149,10 +149,10 @@ HTTP/1.1 200 OK
 
 ### Auth-free SSH server
 
-On Linux and macOS, you can run an SSH server too with no auth. (If you want auth, you can just `tailcat --serve=22` and proxy to your system SSH server)
+On Linux and macOS, you can run an SSH server too with no auth. (If you want auth, you can just `tailcat serve 22` and proxy to your system SSH server)
 
 ```sh
-$ tailcat --serve=no-auth-ssh
+$ tailcat serve no-auth-ssh
 # 🐈 Server listening with new address: tcXXXXXXXXX
 ```
 
@@ -194,7 +194,7 @@ $ tailcat socks curl http://<token>:8081/
 Act as an exit node so the client can reach the server's network:
 
 ```sh
-$ tailcat --serve=exit-node
+$ tailcat serve exit-node
 ```
 
 Parse a connection token and print its contents (the server's WireGuard
@@ -238,7 +238,7 @@ $ tailcat parse tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFygaFhToGjYW
 ```
 
 A server can print the long self-contained form directly with the
-`--full-address` flag.
+`tailcat serve --full-address` flag.
 
 ## Key Management
 
@@ -253,7 +253,8 @@ the key you use determines who can reach you:
 * **Saved keys:** `tailcat genkey` generates a key saved to disk so the
   address stays stable across restarts. The flip side: anyone you've *ever*
   shared that address with can connect to any future server using that key,
-  unless you restrict clients with `--allow` (see `tailcat genkey --client`).
+  unless you restrict clients with `tailcat serve --allow` (see
+  `tailcat genkey --client`).
 
 The CLI says at startup which kind it's using, so you know whether you're
 starting a fresh single-use server or re-listening on an address you may
@@ -264,11 +265,11 @@ $ tailcat genkey --key=default --region=nyc
 # prints the token; key saved to ~/.config/tailcat/keys/default.private.json
 
 # later; the key named "default" is used automatically once it exists:
-$ tailcat --serve=8080
+$ tailcat serve 8080
 # 🐈 Server listening with saved key "default": tcXXXXXXXXX
 
 # ... unless you force a one-off ephemeral key:
-$ tailcat --serve=8080 --key=new
+$ tailcat serve --key=new 8080
 # 🐈 Server listening with new address: tcXXXXXXXXX
 ```
 
@@ -315,7 +316,7 @@ server$ tailcat genkey --key=default --fixed-region
 # wrote file to ~/.config/tailcat/keys/default.private.json
 tcXXXXXXXXX
 
-server$ tailcat --serve=22 --allow=nodekey:cfb6bf...ddfd16
+server$ tailcat serve --allow=nodekey:cfb6bf...ddfd16 22
 # 🐈 Server listening with saved key "default": tcXXXXXXXXX
 ```
 
@@ -361,7 +362,7 @@ passing its hostname (or several, comma-separated) as the region:
 server$ tailcat genkey --key=default --region=derp.example.com
 tcomFwWCCAIsKOqPUux6ClG2RM4A_vOq4VBzGgHGGjq9OsJuFKSWFygaFhToGhYWhwZGVycC5leGFtcGxlLmNvbQ
 
-server$ tailcat --serve=22
+server$ tailcat serve 22
 ```
 
 The token embeds your relay's hostname:
@@ -468,7 +469,7 @@ followed by base64-encoded [CBOR](https://cbor.io/) containing:
 - A separate path-discovery public key (Curve25519, 32 bytes)
 - DERP info. Either:
   1. a small integer referencing one of the default [Tailscale-run tailcat servers](https://tailcat.dev/derpmap.json), or
-  2. full DERP server metadata, to either use a custom DERP server, or to avoid the client needing a potential round-trip to fetch the latest DERP map (the server's `--full-address` flag and the `tailcat resolve` subcommand produce this form)
+  2. full DERP server metadata, to either use a custom DERP server, or to avoid the client needing a potential round-trip to fetch the latest DERP map (the `tailcat serve --full-address` flag and the `tailcat resolve` subcommand produce this form)
 
 A typical token with just an integer region ID is around 95 bytes. With embedded
 DERP node details it's longer but self-contained.

@@ -156,7 +156,7 @@ func TestSOCKSClientKey(t *testing.T) {
 	}
 	cpub := strings.TrimSpace(string(pub))
 
-	_, blob, _ := e.startServer("--serve=all", "--allow="+cpub)
+	_, blob, _ := e.startServer("serve", "--allow="+cpub, "all")
 
 	// The socks client pings the server before starting the proxy and
 	// exits non-zero if the ping fails, so a successful run of a

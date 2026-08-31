@@ -68,9 +68,10 @@ func runClient(t *testing.T, client *exec.Cmd, payload string) (string, error) {
 	}
 }
 
-// TestServePorts verifies that a server with an explicit --serve port
-// list proxies connections on a served port to the same local port,
-// and refuses connections to ports outside the list.
+// TestServePorts verifies that a server with an explicit port list
+// (given to the serve subcommand) proxies connections on a served
+// port to the same local port, and refuses connections to ports
+// outside the list.
 func TestServePorts(t *testing.T) {
 	e := newTestEnv(t)
 	port := startEchoListener(t)
@@ -83,7 +84,7 @@ func TestServePorts(t *testing.T) {
 	unservedPort := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
-	_, blob, _ := e.startServer("--serve=" + strconv.Itoa(int(port)))
+	_, blob, _ := e.startServer("serve", strconv.Itoa(int(port)))
 
 	const payload = "echo through a served port"
 	got, err := runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, blob, strconv.Itoa(int(port))), payload)

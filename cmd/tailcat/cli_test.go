@@ -20,9 +20,9 @@ import (
 func TestHelpListsCommandTree(t *testing.T) {
 	help := ffhelp.Command(newRootCommand()).String()
 	for _, want := range []string{
-		"ping", "socks", "ssh", "parse", "resolve", "genkey", "printpub",
-		"version", "readme",
-		"--serve", "--key", "--allow", "--derpmap-url", "--full-address",
+		"serve", "ping", "socks", "ssh", "parse", "resolve", "genkey",
+		"printpub", "version", "readme",
+		"--serve", "--key", "--derpmap-url",
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf("root help is missing %q", want)
@@ -30,6 +30,35 @@ func TestHelpListsCommandTree(t *testing.T) {
 	}
 	if strings.Contains(help, "\n  -serve") {
 		t.Errorf("root help renders single-dash flags")
+	}
+	// Server-only flags live on the serve subcommand, not the root.
+	// (The long help prose may still mention them; only reject them
+	// as rendered flag entries.)
+	for _, notWant := range []string{"\n  --allow", "\n  --full-address"} {
+		if strings.Contains(help, notWant) {
+			t.Errorf("root help lists server-only flag %q", strings.TrimSpace(notWant))
+		}
+	}
+}
+
+// TestServeHelpListsServerFlags verifies that the server-only flags
+// moved off the root command render in the serve subcommand's help.
+func TestServeHelpListsServerFlags(t *testing.T) {
+	root := newRootCommand()
+	var serve *ff.Command
+	for _, sub := range root.Subcommands {
+		if sub.Name == "serve" {
+			serve = sub
+		}
+	}
+	if serve == nil {
+		t.Fatal("no serve subcommand")
+	}
+	help := ffhelp.Command(serve).String()
+	for _, want := range []string{"--allow", "--full-address", "--key"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("serve help is missing %q", want)
+		}
 	}
 }
 
@@ -39,6 +68,38 @@ func parseCLI(t *testing.T, args ...string) (root *ff.Command, err error) {
 	t.Helper()
 	root = newRootCommand()
 	return root, root.Parse(args)
+}
+
+// TestServeSubcommand verifies that the serve subcommand takes port
+// and service lists as positional arguments, accepts server flags,
+// and rejects mixing positional arguments with the --serve flag.
+func TestServeSubcommand(t *testing.T) {
+	root, err := parseCLI(t, "serve", "--key=new", "80,no-auth-ssh", "8000-8999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := root.GetSelected()
+	if sel.Name != "serve" {
+		t.Fatalf("selected command = %q; want serve", sel.Name)
+	}
+	if *flagKey != "new" {
+		t.Errorf("--key = %q; want new", *flagKey)
+	}
+	got := sel.Flags.(*ff.FlagSet).GetArgs()
+	want := []string{"80,no-auth-ssh", "8000-8999"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("leftover args = %q; want %q", got, want)
+	}
+
+	root, err = parseCLI(t, "serve", "--serve=80", "443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = root.Run(t.Context())
+	var ue usageError
+	if !errors.As(err, &ue) {
+		t.Errorf("serve --serve=80 443: err = %v; want a usageError", err)
+	}
 }
 
 // TestSSHTrailingArgs verifies that flag parsing stops at the ssh
@@ -151,6 +212,19 @@ func TestHelpGoesToStdout(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Errorf("-h stderr = %q; want empty", stderr)
+	}
+
+	// A trailing --serve with no value gets the serve subcommand's
+	// help rather than ff's bare "missing value" parse error.
+	stdout, stderr, err = run("--serve")
+	if err != nil {
+		t.Fatalf("--serve: %v", err)
+	}
+	if !strings.Contains(stdout, "tailcat serve [flags]") {
+		t.Errorf("--serve stdout = %q; want serve help text", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("--serve stderr = %q; want empty", stderr)
 	}
 
 	stdout, stderr, err = run("genkey")
