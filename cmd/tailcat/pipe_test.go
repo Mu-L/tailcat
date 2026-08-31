@@ -25,7 +25,7 @@ import (
 func TestLocalDERPMode(t *testing.T) {
 	bin := buildTailcat(t)
 
-	const derpMapURL = "http://127.0.0.1:9/unreachable"
+	const derpMapURL = "none"
 	addrFile := filepath.Join(t.TempDir(), "addr")
 
 	server := exec.Command(bin, "--key=new", "--derpmap-url="+derpMapURL)
