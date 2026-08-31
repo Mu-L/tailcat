@@ -18,6 +18,13 @@ import (
 	ssh "github.com/tailscale/gliderssh"
 )
 
+// sftpServer is the part of sftp.Server and sftp.RequestServer the
+// subsystem handler drives.
+type sftpServer interface {
+	Serve() error
+	Close() error
+}
+
 // sftpSubsystemHandler returns the handler for the SSH "sftp"
 // subsystem implied by opts, or nil if none should be registered.
 func (s *Server) sftpSubsystemHandler(opts SSHOptions) ssh.SubsystemHandler {
@@ -25,46 +32,63 @@ func (s *Server) sftpSubsystemHandler(opts SSHOptions) ssh.SubsystemHandler {
 		return nil
 	}
 	return func(sess ssh.Session) {
-		var err error
+		var srv sftpServer
 		if opts.Files != nil {
-			err = serveRootedSFTP(sess, opts.Files)
+			rsrv, root, err := newRootedSFTPServer(sess, opts.Files)
+			if err != nil {
+				s.lb.logf("sftp session: %v", err)
+				sess.Exit(1)
+				return
+			}
+			defer root.Close()
+			srv = rsrv
 		} else {
-			err = serveFullSFTP(sess)
+			fsrv, err := newFullSFTPServer(sess)
+			if err != nil {
+				s.lb.logf("sftp session: %v", err)
+				sess.Exit(1)
+				return
+			}
+			srv = fsrv
 		}
-		if err != nil && !errors.Is(err, io.EOF) {
+		err := srv.Serve()
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		// Exit must come before Close: Close closes the session
+		// channel, and an exit-status sent after that is lost, making
+		// scp report failure for successful transfers. Close still
+		// runs afterwards to release any handles a client left open.
+		if err != nil {
 			s.lb.logf("sftp session: %v", err)
 			sess.Exit(1)
-			return
+		} else {
+			sess.Exit(0)
 		}
-		sess.Exit(0)
+		srv.Close()
 	}
 }
 
-// serveFullSFTP serves an SFTP session with the same filesystem
-// access a shell session has, for servers whose SSH already grants a
-// shell. Relative paths resolve against the user's home directory,
-// matching OpenSSH's sftp-server.
-func serveFullSFTP(rwc io.ReadWriteCloser) error {
+// newFullSFTPServer returns an SFTP server for rwc with the same
+// filesystem access a shell session has, for servers whose SSH
+// already grants a shell. Relative paths resolve against the user's
+// home directory, matching OpenSSH's sftp-server.
+func newFullSFTPServer(rwc io.ReadWriteCloser) (*sftp.Server, error) {
 	var opts []sftp.ServerOption
 	if home, err := os.UserHomeDir(); err == nil {
 		opts = append(opts, sftp.WithServerWorkingDirectory(home))
 	}
-	srv, err := sftp.NewServer(rwc, opts...)
-	if err != nil {
-		return err
-	}
-	defer srv.Close()
-	return srv.Serve()
+	return sftp.NewServer(rwc, opts...)
 }
 
-// serveRootedSFTP serves an SFTP session confined to fsrv.Dir with
-// fsrv.Mode access.
-func serveRootedSFTP(rwc io.ReadWriteCloser, fsrv *FileService) error {
+// newRootedSFTPServer returns an SFTP server for rwc confined to
+// fsrv.Dir with fsrv.Mode access, along with the os.Root confining
+// it, which the caller must close after serving.
+func newRootedSFTPServer(rwc io.ReadWriteCloser, fsrv *FileService) (*sftp.RequestServer, *os.Root, error) {
 	root, err := os.OpenRoot(fsrv.Dir)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer root.Close()
 	h := &rootedFiles{root: root, mode: fsrv.Mode}
 	srv := sftp.NewRequestServer(rwc, sftp.Handlers{
 		FileGet:  h,
@@ -72,8 +96,7 @@ func serveRootedSFTP(rwc io.ReadWriteCloser, fsrv *FileService) error {
 		FileCmd:  h,
 		FileList: h,
 	})
-	defer srv.Close()
-	return srv.Serve()
+	return srv, root, nil
 }
 
 // rootedFiles implements the pkg/sftp request handlers on top of an

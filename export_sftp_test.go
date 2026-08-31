@@ -11,5 +11,11 @@ import "io"
 // tests can drive the handlers with an SFTP client over a pipe
 // without an SSH transport.
 func ServeRootedSFTPForTest(rwc io.ReadWriteCloser, fsrv *FileService) error {
-	return serveRootedSFTP(rwc, fsrv)
+	srv, root, err := newRootedSFTPServer(rwc, fsrv)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	defer srv.Close()
+	return srv.Serve()
 }
