@@ -10,6 +10,9 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        # flakehashes.json is maintained by `make tidy`
+        # (tool/updateflakes); do not edit it by hand.
+        flakeHashes = builtins.fromJSON (builtins.readFile ./flakehashes.json);
         # go.mod requires Go 1.27, which is newer than the default
         # pkgs.go/buildGoModule as of 2026-08.
         buildGoModule = pkgs.buildGoModule.override { go = pkgs.go_1_27; };
@@ -20,7 +23,7 @@
           version = self.shortRev or "dev";
           src = self;
           subPackages = [ "cmd/tailcat" ];
-          vendorHash = "sha256-bCdCsYcoXQSSIe3aS73o7do+rbuNniPNw8yNwoEnH6A=";
+          vendorHash = flakeHashes.vendor.sri;
           meta = {
             description = "netcat over Tailscale's data plane, without its control plane";
             homepage = "https://github.com/tailscale/tailcat";
@@ -34,3 +37,4 @@
         };
       });
 }
+# nix-direnv cache busting line: sha256-lznT3EXFHsTS9nn7mVheWJw+2uDtsh1gljqEHxnbdso=

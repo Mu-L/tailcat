@@ -5,6 +5,9 @@
 # GoReleaser output.
 /dist
 
+# Nix build output.
+/result
+
 # Go test artifacts.
 *.test
 *.out
