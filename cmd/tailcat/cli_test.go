@@ -14,6 +14,41 @@ import (
 	"github.com/peterbourgon/ff/v4/ffhelp"
 )
 
+func TestClassifyAddrBlobArg(t *testing.T) {
+	const blob = "tcomFwWCAAAQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH2FpCg"
+	for _, tt := range []struct {
+		name, arg     string
+		wantBlob      string
+		wantDNS       string
+		wantErrSubstr string
+	}{
+		{"blob", blob, blob, "", ""},
+		{"DNS name", "server.example.com", "", "server.example.com", ""},
+		{"absolute DNS name", "server.example.com.", "", "server.example.com.", ""},
+		{"DNS name beginning with tc", "tc-server.example.com", "", "tc-server.example.com", ""},
+		{"blob with period", blob + ".", "", "", "refusing DNS lookup"},
+		{"blob as interior label", "prefix." + blob + ".example", "", "", "refusing DNS lookup"},
+		{"invalid DNS character", "server_name.example", "", "", "invalid character"},
+		{"empty DNS label", "server..example", "", "", "empty label"},
+		{"long DNS label", strings.Repeat("a", 64) + ".example", "", "", "longer than 63 bytes"},
+		{"neither", "not-a-blob", "", "", "neither a valid connection blob nor a DNS name"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			gotBlob, gotDNS, err := classifyAddrBlobArg(tt.arg)
+			if string(gotBlob) != tt.wantBlob || gotDNS != tt.wantDNS {
+				t.Errorf("classifyAddrBlobArg(%q) = %q, %q; want %q, %q", tt.arg, gotBlob, gotDNS, tt.wantBlob, tt.wantDNS)
+			}
+			if tt.wantErrSubstr == "" {
+				if err != nil {
+					t.Fatalf("classifyAddrBlobArg(%q): %v", tt.arg, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
+				t.Fatalf("classifyAddrBlobArg(%q) error = %v; want error containing %q", tt.arg, err, tt.wantErrSubstr)
+			}
+		})
+	}
+}
+
 // TestHelpListsCommandTree verifies that the generated root help
 // mentions every subcommand and the global flags, the declarative
 // help dump that motivated the ff port.

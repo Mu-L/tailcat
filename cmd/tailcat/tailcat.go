@@ -624,30 +624,82 @@ func main() {
 
 // addrBlobArg interprets a CLI destination argument as either a
 // "tc"-prefixed address blob or a DNS name whose "tailcat=" TXT
-// record holds one. A dot can never appear in a base64 address blob,
-// so anything containing one is treated as a DNS name; that also
-// keeps DNS names starting with "tc" working. It exits the process
-// on failure.
+// record holds one. It exits the process on failure.
 func addrBlobArg(arg string) tailcat.ConnBlob {
-	if strings.Contains(arg, ".") {
+	blob, dnsName, err := classifyAddrBlobArg(arg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if dnsName != "" {
 		var r net.Resolver
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		txts, err := r.LookupTXT(ctx, arg)
+		txts, err := r.LookupTXT(ctx, dnsName)
 		if err != nil {
-			log.Fatalf("looking up TXT record for %q: %v", arg, err)
+			log.Fatalf("looking up TXT record for %q: %v", dnsName, err)
 		}
 		for _, txt := range txts {
 			if suf, ok := strings.CutPrefix(txt, "tailcat="); ok {
 				return tailcat.ConnBlob(strings.TrimSpace(suf))
 			}
 		}
-		log.Fatalf("no \"tailcat=\" TXT record found for %q", arg)
+		log.Fatalf("no \"tailcat=\" TXT record found for %q", dnsName)
 	}
-	if !strings.HasPrefix(arg, "tc") {
-		log.Fatalf("argument %q is neither a \"tc\"-prefixed address blob nor a DNS name", arg)
+	return blob
+}
+
+// classifyAddrBlobArg classifies arg without performing a DNS lookup. It
+// rejects DNS-looking input containing a valid connection blob as a label so
+// that pasting a blob with an adjacent period or other dotted suffix cannot
+// disclose the blob in a DNS query.
+func classifyAddrBlobArg(arg string) (blob tailcat.ConnBlob, dnsName string, err error) {
+	blob = tailcat.ConnBlob(arg)
+	if _, err := tailcat.ParseConnBlob(blob); err == nil {
+		return blob, "", nil
 	}
-	return tailcat.ConnBlob(arg)
+	if !strings.Contains(arg, ".") {
+		return "", "", fmt.Errorf("argument %q is neither a valid connection blob nor a DNS name", arg)
+	}
+
+	name := strings.TrimSuffix(arg, ".")
+	for label := range strings.SplitSeq(name, ".") {
+		if _, err := tailcat.ParseConnBlob(tailcat.ConnBlob(label)); err == nil {
+			return "", "", errors.New("argument contains a valid connection blob as a DNS label; refusing DNS lookup")
+		}
+	}
+	if err := validateDNSName(name); err != nil {
+		return "", "", fmt.Errorf("invalid DNS name %q: %w", arg, err)
+	}
+	return "", arg, nil
+}
+
+// validateDNSName validates the conservative ASCII hostname syntax accepted
+// for connection-token TXT lookups.
+func validateDNSName(name string) error {
+	if name == "" {
+		return errors.New("name is empty")
+	}
+	if len(name) > 253 {
+		return errors.New("name is longer than 253 bytes")
+	}
+	for label := range strings.SplitSeq(name, ".") {
+		if label == "" {
+			return errors.New("name contains an empty label")
+		}
+		if len(label) > 63 {
+			return errors.New("name contains a label longer than 63 bytes")
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return errors.New("name contains a label beginning or ending with a hyphen")
+		}
+		for _, c := range []byte(label) {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' {
+				continue
+			}
+			return fmt.Errorf("name contains invalid character %q", c)
+		}
+	}
+	return nil
 }
 
 func clientKey() key.NodePrivate {
