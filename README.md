@@ -19,8 +19,9 @@ The `tailcat` CLI (in `cmd/tailcat`) is built on the `tailcat` Go library
 (importable as [`github.com/tailscale/tailcat`](https://pkg.go.dev/github.com/tailscale/tailcat)).
 
 Whether you use `tailcat` as a CLI tool or library, one side runs a `tailcat`
-server (listener) and gets back a short connection token. The other side passes
-that token to `tailcat`'s client side to connect. All traffic between the two is
+server (listener) and gets back a short tailcat address. The other side passes
+that tailcat address to `tailcat`'s client side to connect. All traffic between
+the two is
 encrypted end-to-end with WireGuard. The initial connection bootstraps through
 a DERP server ([see below](#bring-your-own-derp-relay)), and then magicsock performs NAT traversal to
 upgrade to a direct peer-to-peer UDP connection when possible (usually!).
@@ -153,7 +154,7 @@ HTTP/1.1 200 OK
 
 ### Forward local ports to a tailcat server
 
-To make ports served by a tailcat server available as ordinary local TCP ports (for browsers, database clients, or other tools that do not support SOCKS or stdio), run `forward` with the server's address token:
+To make ports served by a tailcat server available as ordinary local TCP ports (for browsers, database clients, or other tools that do not support SOCKS or stdio), run `forward` with the server's tailcat address:
 
 ```sh
 $ tailcat serve 8080,3306
@@ -188,7 +189,7 @@ $ tailcat ssh tcXXXXXXXXX ls -la
 
 ### Send and receive files
 
-To receive files, run a drop box and share the printed address:
+To receive files, run a drop box and share the printed tailcat address:
 
 ```sh
 $ tailcat recv ~/inbox
@@ -243,7 +244,7 @@ DERP relay or a direct path. `--until-direct` keeps pinging (up to
 if one doesn't:
 
 ```sh
-$ tailcat ping --until-direct <token>
+$ tailcat ping --until-direct <tc-addr>
 pong in 42.1ms via DERP(sfo)
 pong in 1.2ms via 203.0.113.7:41641
 ```
@@ -251,16 +252,16 @@ pong in 1.2ms via 203.0.113.7:41641
 Run a command through a SOCKS5 proxy routed over the tunnel:
 
 ```sh
-$ tailcat socks <token> curl http://server.tailcat:8081/
+$ tailcat socks <tc-addr> curl http://server.tailcat:8081/
 ```
 
-Tokens also work directly as URL hostnames: the SOCKS proxy recognizes
-and dials them, so the token argument is optional. (Tokens are
+Tailcat addresses also work directly as URL hostnames: the SOCKS proxy recognizes
+and dials them, so the tailcat address argument is optional. (Tailcat addresses are
 case-sensitive; this works with curl and most CLI tools, but not with
 browsers, which lowercase hostnames.)
 
 ```sh
-$ tailcat socks curl http://<token>:8081/
+$ tailcat socks curl http://<tc-addr>:8081/
 ```
 
 Act as an exit node so the client can reach the server's network:
@@ -269,7 +270,7 @@ Act as an exit node so the client can reach the server's network:
 $ tailcat serve exit-node
 ```
 
-Parse a connection token and print its contents (the server's WireGuard
+Parse a tailcat address and print its contents (the server's WireGuard
 public key and DERP info) as JSON, without connecting to anything:
 
 ```sh
@@ -280,7 +281,7 @@ $ tailcat parse tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 }
 ```
 
-Resolve a short token (which references a DERP region by ID, requiring
+Resolve a short tailcat address (which references a DERP region by ID, requiring
 clients to fetch the DERP map) into a longer self-contained one with the
 DERP server info embedded, letting clients connect more quickly:
 
@@ -289,7 +290,7 @@ $ tailcat resolve tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFygaFhToGjYWhudGMzMDJhLmlwbi5kZXZhNG0yMDguMTExLjM5LjM4YTZzMjYwNzpmNzQwOjA6M2Y6OjcyMA
 ```
 
-Parsing that resolved token shows the embedded DERP info:
+Parsing that resolved tailcat address shows the embedded DERP info:
 
 ```sh
 $ tailcat parse tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFygaFhToGjYWhudGMzMDJhLmlwbi5kZXZhNG0yMDguMTExLjM5LjM4YTZzMjYwNzpmNzQwOjA6M2Y6OjcyMA
@@ -314,7 +315,7 @@ A server can print the long self-contained form directly with the
 
 ## Key Management
 
-A server's address (connection token) is derived from its WireGuard key, so
+A server's tailcat address is derived from its WireGuard key, so
 the key you use determines who can reach you:
 
 * **Ephemeral keys (the default):** each server run generates a fresh key in
@@ -334,7 +335,7 @@ have shared in the past.
 
 ```sh
 $ tailcat genkey --key=default --region=nyc
-# prints the token; key saved to ~/.config/tailcat/keys/default.private.json
+# prints the tailcat address; key saved to ~/.config/tailcat/keys/default.private.json
 
 # later; the key named "default" is used automatically once it exists:
 $ tailcat serve 8080
@@ -352,8 +353,8 @@ ephemeral key anyway, `--key=<name>` to use a different saved key, or
 `tailcat genkey --delete --key=default` to remove the saved default key.
 `tailcat genkey --list` lists your saved keys.
 
-Tokens can also be published as DNS TXT records and looked up by name;
-a DNS name works anywhere the CLI takes a token:
+Tailcat addresses can also be published as DNS TXT records and looked up by name;
+a DNS name works anywhere the CLI takes a tailcat address:
 
 ```sh
 # If example.com has a TXT record "tailcat=tc..."
@@ -392,7 +393,7 @@ server$ tailcat serve --allow=nodekey:cfb6bf...ddfd16 22
 # 🐈 Server listening with saved key "default": tcXXXXXXXXX
 ```
 
-Publish the token in DNS as a TXT record:
+Publish the tailcat address in DNS as a TXT record:
 
 ```
 my-server.example.com. 300 IN TXT "tailcat=tcXXXXXXXXX"
@@ -410,11 +411,11 @@ Anyone else's handshake is silently ignored: they can't reach the SSH
 server, or even learn that one is running.
 
 Why `--fixed-region`: it discovers the nearest DERP region once, at
-genkey time, and bakes its ID into both the printed token and the
+genkey time, and bakes its ID into both the printed tailcat address and the
 saved key file, so server restarts bind to the same region (keeping
-the published token valid) without re-probing. Otherwise genkey
+the published tailcat address valid) without re-probing. Otherwise genkey
 defaults to `--region=auto`, which instead bakes in "pick at
-startup": fine for one-off use, but a token published in DNS should
+startup": fine for one-off use, but a tailcat address published in DNS should
 name a fixed region so clients and future server restarts all
 rendezvous in the same place. (`--region=<name>` pins an explicit one
 instead; `--region=list` shows the choices.)
@@ -437,7 +438,7 @@ tcomFwWCCAIsKOqPUux6ClG2RM4A_vOq4VBzGgHGGjq9OsJuFKSWFygaFhToGhYWhwZGVycC5leGFtcG
 server$ tailcat serve 22
 ```
 
-The token embeds your relay's hostname:
+The tailcat address embeds your relay's hostname:
 
 ```sh
 $ tailcat parse tcomFwWCCAIsKOqPUux6ClG2RM4A_vOq4VBzGgHGGjq9OsJuFKSWFygaFhToGhYWhwZGVycC5leGFtcGxlLmNvbQ
@@ -463,7 +464,7 @@ point both sides at it with `--derpmap-url`.
 ### Go library
 
 A minimal server that answers any TCP port through the tunnel and
-prints its token. The zero value Server picks defaults for anything
+prints its tailcat address. The zero value Server picks defaults for anything
 unset: a fresh ephemeral key, the nearest region of the default DERP
 map, and `log.Printf` logging (set `Logf` to `logger.Discard` for
 quiet):
@@ -491,14 +492,14 @@ func main() {
 	if err := s.Start(); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(s.ConnBlob())
+	fmt.Println(s.TailcatAddr())
 	select {}
 }
 ```
 
-And a minimal client that dials it, given that token as its argument.
-Like Server, the Client zero value works with just its Server token
-field set (`tailcat.NewClient` is shorthand for exactly that), and
+And a minimal client that dials it, given that tailcat address as its argument.
+Like Server, the Client zero value works with just its `Server` field set to a
+tailcat address (`tailcat.NewClient` is shorthand for exactly that), and
 the tunnel is established lazily by the first dial:
 
 ```go
@@ -514,7 +515,7 @@ import (
 )
 
 func main() {
-	cl := tailcat.NewClient(tailcat.ConnBlob(os.Args[1]))
+	cl := tailcat.NewClient(tailcat.Addr(os.Args[1]))
 	defer cl.Close()
 	c, err := cl.DialTCPPort(context.Background(), 80)
 	if err != nil {
@@ -531,10 +532,10 @@ hello from port 80
 
 ## How it works
 
-### Connection tokens
+### Tailcat addresses
 
-A Tailcat server is identified by a **connection token** (called a
-ConnBlob internally). It looks like `tcXYZ...` and is a `"tc"` prefix
+A Tailcat server is identified by a **tailcat address**, represented by the Go
+type `tailcat.Addr`. It looks like `tcXYZ...` and is a `"tc"` prefix
 followed by base64-encoded [CBOR](https://cbor.io/) containing:
 
 - The server's WireGuard public key (Curve25519, 32 bytes)
@@ -543,8 +544,8 @@ followed by base64-encoded [CBOR](https://cbor.io/) containing:
   1. a small integer referencing one of the default [Tailscale-run tailcat servers](https://tailcat.dev/derpmap.json), or
   2. full DERP server metadata, to either use a custom DERP server, or to avoid the client needing a potential round-trip to fetch the latest DERP map (the `tailcat serve --full-address` flag and the `tailcat resolve` subcommand produce this form)
 
-A typical token with just an integer region ID is around 95 bytes. With embedded
-DERP node details it's longer but self-contained.
+A typical tailcat address with just an integer region ID is around 95 bytes. With
+embedded DERP node details it's longer but self-contained.
 
 ### Network stack
 
@@ -567,10 +568,10 @@ without the control plane.
 ### Connection flow
 
 1. **Server starts.** It generates (or loads) a WireGuard keypair,
-   connects to a DERP relay, and prints its connection token to stderr.
+   connects to a DERP relay, and prints its tailcat address to stderr.
    It then waits for clients.
 
-2. **Client parses the token** to learn the server's public key and
+2. **Client parses the tailcat address** to learn the server's public key and
    path-discovery key, plus its DERP region. It generates its own ephemeral
    keypair and connects to the same DERP relay. The separate path-discovery
    key can appear in cleartext direct-path disco frames without revealing the

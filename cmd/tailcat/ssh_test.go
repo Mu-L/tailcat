@@ -17,20 +17,20 @@ import (
 	"github.com/tailscale/tailcat"
 )
 
-func TestSSHRejectsInvalidConnBlob(t *testing.T) {
+func TestSSHRejectsInvalidAddr(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
-		blob    string
+		addr    string
 		wantErr string
 	}{
-		{"missing prefix", "not-a-token", `doesn't start with "tc"`},
+		{"missing prefix", "not-an-address", `doesn't start with "tc"`},
 		{"invalid base64", "tc%", "base64 decode"},
 		{"invalid CBOR", "tc" + base64.RawURLEncoding.EncodeToString([]byte("not CBOR")), "CBOR unmarshal"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			err := clientSSHMode("22", []string{tt.blob})
+			err := clientSSHMode("22", []string{tt.addr})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("clientSSHMode(%q) error = %v; want an error containing %q", tt.blob, err, tt.wantErr)
+				t.Fatalf("clientSSHMode(%q) error = %v; want an error containing %q", tt.addr, err, tt.wantErr)
 			}
 		})
 	}
@@ -40,29 +40,29 @@ func TestSSHProxyCommandDERPMap(t *testing.T) {
 	const (
 		exe  = "/path/to/tailcat"
 		key  = "client-default"
-		blob = "tc-short-blob"
+		addr = "tc-short-addr"
 		port = "22"
 		url  = "https://derp.example.com/derpmap.json"
 	)
-	got, err := sshProxyCommand(exe, key, url, blob, port)
+	got, err := sshProxyCommand(exe, key, url, addr, port)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `'` + exe + `' '--key=client-default' '--derpmap-url=https://derp.example.com/derpmap.json' 'tc-short-blob' '22'`
+	want := `'` + exe + `' '--key=client-default' '--derpmap-url=https://derp.example.com/derpmap.json' 'tc-short-addr' '22'`
 	if runtime.GOOS == "windows" {
-		want = `"/path/to/tailcat" "--key=client-default" "--derpmap-url=https://derp.example.com/derpmap.json" "tc-short-blob" "22"`
+		want = `"/path/to/tailcat" "--key=client-default" "--derpmap-url=https://derp.example.com/derpmap.json" "tc-short-addr" "22"`
 	}
 	if got != want {
 		t.Errorf("sshProxyCommand with custom DERP map = %q; want %q", got, want)
 	}
 
-	got, err = sshProxyCommand(exe, key, tailcat.DefaultDERPMapURL, blob, port)
+	got, err = sshProxyCommand(exe, key, tailcat.DefaultDERPMapURL, addr, port)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `'` + exe + `' '--key=client-default' 'tc-short-blob' '22'`
+	want = `'` + exe + `' '--key=client-default' 'tc-short-addr' '22'`
 	if runtime.GOOS == "windows" {
-		want = `"/path/to/tailcat" "--key=client-default" "tc-short-blob" "22"`
+		want = `"/path/to/tailcat" "--key=client-default" "tc-short-addr" "22"`
 	}
 	if got != want {
 		t.Errorf("sshProxyCommand with default DERP map = %q; want %q", got, want)
@@ -70,14 +70,14 @@ func TestSSHProxyCommandDERPMap(t *testing.T) {
 
 	// No --key flag at all when unset. The shell would collapse
 	// --key="" to --key=, which ff parses by consuming the next
-	// argument, the address blob.
-	got, err = sshProxyCommand(exe, "", tailcat.DefaultDERPMapURL, blob, port)
+	// argument, the tailcat address.
+	got, err = sshProxyCommand(exe, "", tailcat.DefaultDERPMapURL, addr, port)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `'` + exe + `' 'tc-short-blob' '22'`
+	want = `'` + exe + `' 'tc-short-addr' '22'`
 	if runtime.GOOS == "windows" {
-		want = `"/path/to/tailcat" "tc-short-blob" "22"`
+		want = `"/path/to/tailcat" "tc-short-addr" "22"`
 	}
 	if got != want {
 		t.Errorf("sshProxyCommand with no key = %q; want %q", got, want)
@@ -161,38 +161,38 @@ func TestValidatedSSHPort(t *testing.T) {
 }
 
 func TestSSHDestHost(t *testing.T) {
-	// A realistic ConnBlob, taken from an existing test fixture elsewhere
+	// A realistic Addr, taken from an existing test fixture elsewhere
 	// in this package.
-	const blob = "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu"
+	const addr = "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu"
 
-	got := sshDestHost(blob)
+	got := sshDestHost(addr)
 	if !strings.HasPrefix(got, "tailcat-") {
-		t.Fatalf("sshDestHost(%q) = %q; want tailcat- prefix", blob, got)
+		t.Fatalf("sshDestHost(%q) = %q; want tailcat- prefix", addr, got)
 	}
 	if len(got) > 24 {
-		t.Fatalf("sshDestHost(%q) = %q (%d bytes); want a short, fixed-width host", blob, got, len(got))
+		t.Fatalf("sshDestHost(%q) = %q (%d bytes); want a short, fixed-width host", addr, got, len(got))
 	}
 
-	// Deterministic: same blob always produces the same host, so ssh's own
+	// Deterministic: same addr always produces the same host, so ssh's own
 	// connection sharing (keyed off ControlPath, hence off this string)
 	// keeps reusing the right control socket across invocations.
-	if again := sshDestHost(blob); again != got {
-		t.Fatalf("sshDestHost(%q) is not deterministic: %q != %q", blob, got, again)
+	if again := sshDestHost(addr); again != got {
+		t.Fatalf("sshDestHost(%q) is not deterministic: %q != %q", addr, got, again)
 	}
 
-	// Distinct blobs must not collide, or ssh would multiplex two different
+	// Distinct addrs must not collide, or ssh would multiplex two different
 	// tailcat servers onto the same control socket.
-	const otherBlob = "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGF2"
-	if other := sshDestHost(otherBlob); other == got {
-		t.Fatalf("sshDestHost collided for distinct blobs: %q", got)
+	const otherAddr = "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGF2"
+	if other := sshDestHost(otherAddr); other == got {
+		t.Fatalf("sshDestHost collided for distinct addrs: %q", got)
 	}
 
 	// The whole point: it must actually fit an AF_UNIX ControlPath, unlike
-	// a long ConnBlob used directly. Linux's sun_path is 108 bytes,
+	// a long Addr used directly. Linux's sun_path is 108 bytes,
 	// including the trailing NUL; macOS's is 104. Give plenty of headroom
 	// for a real home directory and username.
 	const controlPath = "/home/someuser/.ssh/master-someuser@" + "PLACEHOLDER" + ":22"
-	if got := len(strings.Replace(controlPath, "PLACEHOLDER", sshDestHost(blob), 1)); got >= 100 {
+	if got := len(strings.Replace(controlPath, "PLACEHOLDER", sshDestHost(addr), 1)); got >= 100 {
 		t.Fatalf("example ControlPath is %d bytes; want comfortably under the ~104-108 byte AF_UNIX limit", got)
 	}
 }

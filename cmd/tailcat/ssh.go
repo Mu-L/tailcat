@@ -26,19 +26,19 @@ const tailCatSSHEnabled = true
 
 const sshLongHelp = `Examples:
 
-	tailcat ssh <addrblob>
-	tailcat ssh root@<addrblob>
-	tailcat ssh <addrblob> uptime
+	tailcat ssh <tc-addr>
+	tailcat ssh root@<tc-addr>
+	tailcat ssh <tc-addr> uptime
 	tailcat ssh example.com
-	tailcat ssh -p 2222 <addrblob>
-	tailcat ssh -p 10.0.0.1:22 <addrblob>
+	tailcat ssh -p 2222 <tc-addr>
+	tailcat ssh -p 10.0.0.1:22 <tc-addr>
 
 This execs the system ssh client with a ProxyCommand that runs
 tailcat itself, so ssh sees a normal (if oddly named) destination
 while the connection actually goes over tailcat to the server.
 Anything after the destination is passed through to ssh, like a
 remote command to run.
-A DNS name whose "tailcat=" TXT record holds an address blob works
+A DNS name whose "tailcat=" TXT record holds a tailcat address works
 as the destination too.
 
 The -p flag is the server port to connect to (default 22), or, if
@@ -52,7 +52,7 @@ func sshCommand(parent *ff.FlagSet) *ff.Command {
 	port := fs.StringShort('p', "22", "port number, or ip:port to reach via the server's exit node; a bare IP means port 22 on it")
 	return &ff.Command{
 		Name:      "ssh",
-		Usage:     "tailcat ssh [-p <port|ip:port>] [user@]<addrblob> [<command> [args...]]",
+		Usage:     "tailcat ssh [-p <port|ip:port>] [user@]<tc-addr> [<command> [args...]]",
 		ShortHelp: "connect the system ssh client through a tailcat server",
 		LongHelp:  sshLongHelp,
 		Flags:     fs,
@@ -64,21 +64,21 @@ func sshCommand(parent *ff.FlagSet) *ff.Command {
 
 func clientSSHMode(portOrIPPort string, args []string) error {
 	if len(args) == 0 {
-		return usagef("ssh requires a [user@]<addrblob> destination argument")
+		return usagef("ssh requires a [user@]<tc-addr> destination argument")
 	}
 	portOrIPPort, err := validatedSSHPort(portOrIPPort)
 	if err != nil {
 		return err
 	}
-	dst := args[0] // either a derpaddr alone or "user@<derpaddr>"
+	dst := args[0] // either a tailcat address alone or "user@<tc-addr>"
 	cmdArgs := args[1:]
 
-	sshUser, connBlobStr, hasUser := strings.Cut(dst, "@")
+	sshUser, addrStr, hasUser := strings.Cut(dst, "@")
 	if !hasUser {
-		connBlobStr = sshUser
+		addrStr = sshUser
 		sshUser = ""
 	}
-	connBlobStr, err = validatedConnBlob(connBlobStr)
+	addrStr, err = validatedAddr(addrStr)
 	if err != nil {
 		return err
 	}
@@ -90,11 +90,11 @@ func clientSSHMode(portOrIPPort string, args []string) error {
 	if err != nil {
 		log.Fatalf("no ssh client found in $PATH: %v", err)
 	}
-	sshDst := sshDestHost(connBlobStr)
+	sshDst := sshDestHost(addrStr)
 	if sshUser != "" {
 		sshDst = sshUser + "@" + sshDst
 	}
-	proxyCommand, err := sshProxyCommand(exe, *flagKey, *flagDERPMapURL, connBlobStr, portOrIPPort)
+	proxyCommand, err := sshProxyCommand(exe, *flagKey, *flagDERPMapURL, addrStr, portOrIPPort)
 	if err != nil {
 		return err
 	}
@@ -129,33 +129,33 @@ func validatedSSHPort(v string) (string, error) {
 	return "", usagef("invalid port or IP:port %q", v)
 }
 
-// validatedConnBlob resolves arg if it is a DNS name and verifies that the
-// result is a valid connection blob before it is handed to ssh or scp.
-func validatedConnBlob(arg string) (string, error) {
-	connBlob := tailcat.ConnBlob(arg)
+// validatedAddr resolves arg if it is a DNS name and verifies that the
+// result is a valid tailcat address before it is handed to ssh or scp.
+func validatedAddr(arg string) (string, error) {
+	addr := tailcat.Addr(arg)
 	if strings.Contains(arg, ".") {
-		connBlob = addrBlobArg(arg)
+		addr = tailcatAddrArg(arg)
 	}
-	if _, err := tailcat.ParseConnBlob(connBlob); err != nil {
-		return "", fmt.Errorf("invalid connection blob %q: %w", arg, err)
+	if _, err := tailcat.ParseAddr(addr); err != nil {
+		return "", fmt.Errorf("invalid tailcat address %q: %w", arg, err)
 	}
-	return string(connBlob), nil
+	return string(addr), nil
 }
 
 // sshProxyCommand returns the command passed to OpenSSH to connect the SSH
 // client to a tailcat server. The command is run by OpenSSH, so values that
 // can contain shell-special characters must be quoted.
-func sshProxyCommand(exe, keyName, derpMapURL, connBlob, portOrIPPort string) (string, error) {
+func sshProxyCommand(exe, keyName, derpMapURL, addr, portOrIPPort string) (string, error) {
 	args := []string{exe}
 	// No --key flag at all when unset: ff parses --key= by consuming the
-	// connection blob as the flag's value.
+	// tailcat address as the flag's value.
 	if keyName != "" {
 		args = append(args, "--key="+keyName)
 	}
 	if derpMapURL != tailcat.DefaultDERPMapURL {
 		args = append(args, "--derpmap-url="+derpMapURL)
 	}
-	args = append(args, connBlob, portOrIPPort)
+	args = append(args, addr, portOrIPPort)
 	if runtime.GOOS == "windows" {
 		return proxyCommandJoinWindows(args)
 	}
@@ -207,24 +207,24 @@ func quoteWindowsCommandArg(arg string) string {
 }
 
 // sshDestHost returns the hostname to give the system ssh client as the
-// connection destination for a tailcat ConnBlob. It is a short, deterministic
-// function of blob rather than blob itself.
+// connection destination for a tailcat Addr. It is a short, deterministic
+// function of the address rather than the address itself.
 //
 // ssh substitutes the literal destination hostname into %n in ControlPath
 // (commonly "~/.ssh/master-%r@%n:%p"), and that expansion has to fit in an
 // AF_UNIX socket path (~100 bytes total, including the home directory and
-// ".ssh/master-" prefix). A ConnBlob can run past that on its own, so ssh
+// ".ssh/master-" prefix). An Addr can run past that on its own, so ssh
 // with connection multiplexing fails with "too long for Unix domain socket"
-// before tailcat is ever invoked (#12). The real blob is unaffected: it's
+// before tailcat is ever invoked (#12). The real address is unaffected: it's
 // passed to ProxyCommand as its own argument and still does the actual
 // routing, so this string only ever labels the connection for ssh's
 // bookkeeping (%n, and StrictHostKeyChecking is already off).
 //
-// Deterministic hashing, not blob truncation, matters here: ssh's connection
-// sharing keys a control socket off ControlPath, so the same blob must
+// Deterministic hashing, not address truncation, matters here: ssh's connection
+// sharing keys a control socket off ControlPath, so the same address must
 // always produce the same short host or multiplexing silently stops
 // reusing (or worse, collides across) the right server.
-func sshDestHost(blob string) string {
-	sum := sha256.Sum256([]byte(blob))
+func sshDestHost(addr string) string {
+	sum := sha256.Sum256([]byte(addr))
 	return "tailcat-" + hex.EncodeToString(sum[:8])
 }

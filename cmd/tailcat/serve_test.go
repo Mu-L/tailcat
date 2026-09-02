@@ -84,10 +84,10 @@ func TestServePorts(t *testing.T) {
 	unservedPort := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
-	_, blob, _ := e.startServer("serve", strconv.Itoa(int(port)))
+	_, addr, _ := e.startServer("serve", strconv.Itoa(int(port)))
 
 	const payload = "echo through a served port"
-	got, err := runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, blob, strconv.Itoa(int(port))), payload)
+	got, err := runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, addr, strconv.Itoa(int(port))), payload)
 	if err != nil {
 		t.Fatalf("client to served port: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestServePorts(t *testing.T) {
 		t.Errorf("served port echoed %q; want %q", got, payload)
 	}
 
-	got, err = runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, blob, strconv.Itoa(unservedPort)), payload)
+	got, err = runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, addr, strconv.Itoa(unservedPort)), payload)
 	if err == nil {
 		t.Errorf("client to unserved port %v succeeded with output %q; want connection failure", unservedPort, got)
 	}
@@ -110,11 +110,11 @@ func TestServeExitNode(t *testing.T) {
 	port := startEchoListener(t)
 	dst := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)
 
-	_, blob, _ := e.startServer("--serve=exit-node")
+	_, addr, _ := e.startServer("--serve=exit-node")
 
 	t.Run("client_ipport", func(t *testing.T) {
 		const payload = "echo through the exit node"
-		got, err := runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, blob, dst.String()), payload)
+		got, err := runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, addr, dst.String()), payload)
 		if err != nil {
 			t.Fatalf("client to %v: %v", dst, err)
 		}
@@ -124,7 +124,7 @@ func TestServeExitNode(t *testing.T) {
 	})
 
 	t.Run("socks5", func(t *testing.T) {
-		socks := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "socks", blob)
+		socks := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "socks", addr)
 		socksErr, err := socks.StderrPipe()
 		if err != nil {
 			t.Fatal(err)

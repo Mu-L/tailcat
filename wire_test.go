@@ -18,7 +18,7 @@ import (
 // exactly one short name.
 //
 // Do not change or reuse existing entries: the short names are the
-// ConnBlob wire format.
+// Addr wire format.
 var wireFieldNames = map[string]string{
 	"p": "ServerPublic",
 	"k": "ServerDiscoPublic",

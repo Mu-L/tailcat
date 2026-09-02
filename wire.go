@@ -7,9 +7,9 @@ import (
 	"tailscale.com/tailcfg"
 )
 
-// This file defines the CBOR wire types behind [ConnBlob]. They mirror the
+// This file defines the CBOR wire types behind [Addr]. They mirror the
 // subset of [ConnInfo] and the tailcfg DERP types that tailcat actually
-// uses, with single-character CBOR field names and omitempty so that blobs
+// uses, with single-character CBOR field names and omitempty so that addresses
 // with embedded DERP regions stay short. Having our own types also keeps
 // the wire format independent of upstream tailcfg changes.
 //
@@ -18,7 +18,7 @@ import (
 // name per Go field name and vice versa), which TestWireFieldNames locks
 // in.
 
-// The JSON tags are only for display (see [ParseConnBlobRaw]); they
+// The JSON tags are only for display (see [ParseAddrRaw]); they
 // mirror the Go field names but omit empty fields, so the JSON shows
 // just what the CBOR actually carries.
 

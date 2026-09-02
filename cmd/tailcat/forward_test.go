@@ -49,8 +49,8 @@ func TestForwardEndToEnd(t *testing.T) {
 	localPort := localLn.Addr().(*net.TCPAddr).Port
 	localLn.Close()
 
-	_, blob, _ := e.startServer("serve", strconv.Itoa(int(remotePort)))
-	forward := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "forward", blob, fmt.Sprintf("%d:%d", localPort, remotePort))
+	_, tailcatAddr, _ := e.startServer("serve", strconv.Itoa(int(remotePort)))
+	forward := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "forward", tailcatAddr, fmt.Sprintf("%d:%d", localPort, remotePort))
 	if err := forward.Start(); err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,7 @@
 // This is the library behind the "tailcat" CLI command (cmd/tailcat).
 //
 // A [Server] listens for incoming clients via a DERP relay. Clients discover
-// the server through a compact [ConnBlob] (connection blob) that encodes the
+// the server through a compact [Addr] (a tailcat address) that encodes the
 // server's WireGuard and path-discovery public keys and DERP region. DERP is used only for the initial
 // bootstrap; once both sides learn each other's endpoints, Tailscale's
 // magicsock layer upgrades to a direct peer-to-peer UDP path whenever possible,
@@ -22,7 +22,7 @@
 // Tailscale's WireGuard encryption + NAT traversal.
 //
 // Using Tailscale's DERP servers is not required; you can run your own DERP
-// server and provide its region information in the ConnBlob.
+// server and provide its region information in the tailcat address.
 //
 // This package has no API stability promises: types, functions, and
 // the wire format may all change. See the Stability section of the
@@ -133,26 +133,27 @@ var ExpandForServer expandForServer
 
 type expandForServer struct{}
 
-// ConnBlob is a compact, URL-safe string that a server gives to clients so
-// they can connect. It is the "tc"-prefixed base64url encoding of CBOR-encoded
-// [ConnInfo]. A typical ConnBlob looks like "tcomFwWC…".
-type ConnBlob string
+// Addr is a compact, URL-safe tailcat address that a server gives to clients
+// so they can connect. It is the "tc"-prefixed base64url encoding of a
+// CBOR-encoded [ConnInfo]. A typical Addr looks like "tcomFwWC…".
+type Addr string
 
 // ConnInfo describes how to reach a server: its WireGuard and path-discovery
-// public keys and which DERP relay region to use. It is serialized into a [ConnBlob] for exchange,
+// public keys and which DERP relay region to use. It is serialized into an
+// [Addr] for exchange,
 // via the wire types in wire.go.
 type ConnInfo struct {
 	ServerPublic NodePublic // a key.NodePublic
 	// ServerDiscoPublic is the server's public key for path discovery.
 	// It is deliberately independent from ServerPublic: disco packets carry
 	// this key in cleartext on direct UDP paths, while ServerPublic is the
-	// unguessable part of the server's connection address.
+	// unguessable part of the server's tailcat address.
 	ServerDiscoPublic DiscoPublic // a key.DiscoPublic
 
 	// Region, if non-empty, lists the regions of a DERPMap.
 	// Either Region or RegionID must be set. If Region is set
 	// the client can avoid doing a lookup to discover the DERP map
-	// but the ConnBlob is longer.
+	// but the tailcat address is longer.
 	//
 	// As of 2023-09-22, a maximum of 1 region may be provided.
 	// In the future, a server might advertise its presence in
@@ -160,7 +161,7 @@ type ConnInfo struct {
 	Region []*tailcfg.DERPRegion `json:",omitempty"`
 
 	// RegionID lists the number of one of Tailscale's provided
-	// DERP servers. If set, Region may be omitted and the ConnBlob
+	// DERP servers. If set, Region may be omitted and the tailcat address
 	// is shorter, at the cost of the client needing to fetch
 	// the derpmap from tailscale.com once at startup.
 	// If -1 (for use when saving a keypair to disk for reuse later), a region
@@ -175,7 +176,7 @@ type NodePublic struct {
 }
 
 // DiscoPublic is a wrapper around key.DiscoPublic that uses its raw 32-byte
-// representation in connection blobs.
+// representation in tailcat addresses.
 type DiscoPublic struct {
 	key.DiscoPublic
 }
@@ -690,12 +691,12 @@ func (s *Server) AddAllowedClient(k key.NodePublic) {
 	mak.Set(&s.lb.allowedClients, k, true)
 }
 
-// ConnBlob returns the token that clients use to connect to this
+// TailcatAddr returns the tailcat address that clients use to connect to this
 // server. It embeds the full DERP region, so clients don't need to
 // fetch the DERP map from the network. It must only be called after
 // [Server.Start].
-func (s *Server) ConnBlob() ConnBlob {
-	return s.lb.connBlob()
+func (s *Server) TailcatAddr() Addr {
+	return s.lb.tailcatAddr()
 }
 
 func newLocoBackend(priv key.NodePrivate) *locoBackend {
@@ -713,9 +714,9 @@ func newLocoBackend(priv key.NodePrivate) *locoBackend {
 	return lb
 }
 
-var debugConnBlob = envknob.Bool("TS_DEBUG_CONNBLOB")
+var debugAddr = envknob.Bool("TS_DEBUG_ADDR")
 
-func (lb *locoBackend) connBlob() ConnBlob {
+func (lb *locoBackend) tailcatAddr() Addr {
 	if lb.dm == nil {
 		panic("no DERPMap set")
 	}
@@ -728,19 +729,19 @@ func (lb *locoBackend) connBlob() ConnBlob {
 	if len(lb.dm.Regions) == 0 {
 		panic("no regions in derpmap")
 	}
-	if debugConnBlob {
-		log.Printf("ConnBlob: %v", logger.AsJSON(ci))
+	if debugAddr {
+		log.Printf("tailcat address: %v", logger.AsJSON(ci))
 	}
-	return ci.ConnBlob()
+	return ci.Addr()
 }
 
-// ConnBlob serializes the ConnInfo into a compact [ConnBlob] string.
+// Addr serializes the ConnInfo into a compact [Addr] string.
 // It is encoded via the wire types (see wire.go), which drop the
 // DERP region fields tailcat doesn't use. Some other fields
 // (RegionID, RegionCode, RegionName, node names that are redundant
 // next to an explicit HostName) are zeroed before encoding to reduce
-// size; [ParseConnBlob] restores them.
-func (ci *ConnInfo) ConnBlob() ConnBlob {
+// size; [ParseAddr] restores them.
+func (ci *ConnInfo) Addr() Addr {
 	w := &wireConnInfo{
 		ServerPublic: ci.ServerPublic,
 		RegionID:     ci.RegionID.Int64(),
@@ -769,45 +770,45 @@ func (ci *ConnInfo) ConnBlob() ConnBlob {
 	if err != nil {
 		panic(err)
 	}
-	if debugConnBlob {
-		log.Printf("ConnBlob: %q", x)
-		log.Printf("ConnBlob: %x", x)
+	if debugAddr {
+		log.Printf("tailcat address: %q", x)
+		log.Printf("tailcat address: %x", x)
 	}
-	return "tc" + ConnBlob(base64.RawURLEncoding.EncodeToString(x))
+	return "tc" + Addr(base64.RawURLEncoding.EncodeToString(x))
 }
 
-// Resolve returns a self-contained equivalent of b with the DERP
-// relay's details embedded, so that later use of the blob requires
-// no network access to fetch the DERP map. It is to a ConnBlob
+// Resolve returns a self-contained equivalent of a with the DERP
+// relay's details embedded, so that later use of the address requires
+// no network access to fetch the DERP map. It is to an Addr
 // roughly what a DNS lookup is to a hostname: the resolved form is
 // longer, works offline, and pins the relay details as they were at
-// resolution time. If b already embeds its relay details, it is
+// resolution time. If a already embeds its relay details, it is
 // returned unchanged. The opts are as documented on [ConnInfo.Expand].
-func (b ConnBlob) Resolve(ctx context.Context, opts ...any) (ConnBlob, error) {
-	ci, err := ParseConnBlob(b)
+func (a Addr) Resolve(ctx context.Context, opts ...any) (Addr, error) {
+	ci, err := ParseAddr(a)
 	if err != nil {
 		return "", err
 	}
 	if len(ci.Region) > 0 {
-		return b, nil
+		return a, nil
 	}
 	if err := ci.Expand(ctx, opts...); err != nil {
 		return "", err
 	}
-	// Keep the blob short: two relay nodes suffice.
+	// Keep the address short: two relay nodes suffice.
 	for _, r := range ci.Region {
 		r.Nodes = r.Nodes[:min(2, len(r.Nodes))]
 	}
 	ci.RegionID = 0
-	return ci.ConnBlob(), nil
+	return ci.Addr(), nil
 }
 
-// parseWire decodes cb into its wire form, without restoring the
-// fields that [ConnInfo.ConnBlob] elides.
-func parseWire(cb ConnBlob) (*wireConnInfo, error) {
-	rest, ok := strings.CutPrefix(string(cb), "tc")
+// parseWire decodes an address into its wire form, without restoring the
+// fields that [ConnInfo.Addr] elides.
+func parseWire(addr Addr) (*wireConnInfo, error) {
+	rest, ok := strings.CutPrefix(string(addr), "tc")
 	if !ok {
-		return nil, errors.New("server address doesn't start with \"tc\"")
+		return nil, errors.New("tailcat address doesn't start with \"tc\"")
 	}
 	x, err := base64.RawURLEncoding.DecodeString(rest)
 	if err != nil {
@@ -820,21 +821,21 @@ func parseWire(cb ConnBlob) (*wireConnInfo, error) {
 	return w, nil
 }
 
-// ParseConnBlobRaw decodes cb into its wire form, without restoring
-// the implicit fields that [ParseConnBlob] synthesizes (region and
+// ParseAddrRaw decodes an address into its wire form, without restoring
+// the implicit fields that [ParseAddr] synthesizes (region and
 // node IDs, region codes, node names). The returned value is only
 // meant for JSON display, as by the CLI's "parse" subcommand: its
-// JSON form shows just the fields the encoded blob actually carries.
-func ParseConnBlobRaw(cb ConnBlob) (any, error) {
-	return parseWire(cb)
+// JSON form shows just the fields the encoded address actually carries.
+func ParseAddrRaw(addr Addr) (any, error) {
+	return parseWire(addr)
 }
 
-// ParseConnBlob decodes a [ConnBlob] back into a [ConnInfo], restoring
+// ParseAddr decodes an [Addr] back into a [ConnInfo], restoring
 // fields that were stripped during encoding (RegionID, RegionCode,
 // node names).
-func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
+func ParseAddr(addr Addr) (ConnInfo, error) {
 	var zero ConnInfo
-	w, err := parseWire(cb)
+	w, err := parseWire(addr)
 	if err != nil {
 		return zero, err
 	}
@@ -846,15 +847,15 @@ func ParseConnBlob(cb ConnBlob) (ConnInfo, error) {
 		ci.ServerDiscoPublic = *w.ServerDiscoPublic
 	}
 	for i, wr := range w.Region {
-		// CBOR nulls decode to nil pointers, and blobs come from
+		// CBOR nulls decode to nil pointers, and addresses come from
 		// untrusted places (a pasted address, a "tailcat=" TXT record),
 		// so reject them rather than dereferencing them below.
 		if wr == nil {
-			return zero, fmt.Errorf("invalid connection blob: region %d is null", i)
+			return zero, fmt.Errorf("invalid tailcat address: region %d is null", i)
 		}
 		for j, n := range wr.Nodes {
 			if n == nil {
-				return zero, fmt.Errorf("invalid connection blob: region %d node %d is null", i, j)
+				return zero, fmt.Errorf("invalid tailcat address: region %d node %d is null", i, j)
 			}
 		}
 		ci.Region = append(ci.Region, wr.derpRegion())
@@ -944,7 +945,7 @@ func (c *memDERPMapCache) Put(url string, data []byte, etag string) error {
 //
 // TODO: do a fresh fetch (ignoring cache freshness) if we ever fail
 // to connect to any DERP region afterwards, e.g. if the cached map is
-// so stale that no region answers or the region a token references no
+// so stale that no region answers or the region an address references no
 // longer exists. For now staleness is only bounded by the max age.
 func fetchDERPMap(ctx context.Context, fetchURL, mode string, cache DERPMapCache) (*tailcfg.DERPMap, error) {
 	if cache == nil {
@@ -1108,7 +1109,7 @@ func (ci *ConnInfo) Expand(ctx context.Context, opts ...any) error {
 	}
 	r, ok := dm.Regions[ci.RegionID]
 	if !ok {
-		return fmt.Errorf("connection string said only DERP RegionID %v but no such region in %v", ci.RegionID, dmSrc)
+		return fmt.Errorf("tailcat address specified DERP RegionID %v but no such region exists in %v", ci.RegionID, dmSrc)
 	}
 	ci.Region = append(ci.Region, r)
 	return nil
@@ -1499,9 +1500,9 @@ func createEngine(logf logger.Logf, lb *locoBackend) (err error) {
 // and is useful to test connectivity first or to measure the relay
 // round-trip time.
 type Client struct {
-	// Server is the token identifying the server to connect to.
+	// Server is the tailcat address identifying the server to connect to.
 	// It is required and must be set before the client's first use.
-	Server ConnBlob
+	Server Addr
 
 	// Key is the client's node identity, which servers can allowlist.
 	// If zero, a new ephemeral key is generated at first use.
@@ -1513,7 +1514,7 @@ type Client struct {
 	Logf logger.Logf
 
 	// DERPMapURL, if non-empty, is an alternate URL to fetch the DERP
-	// map from when the token doesn't embed the relay details.
+	// map from when the address doesn't embed the relay details.
 	// If empty, [DefaultDERPMapURL] is used. If set, it must be set
 	// before the client's first use.
 	DERPMapURL string
@@ -1551,10 +1552,10 @@ func (c *Client) nodeKeyLocked() key.NodePrivate {
 }
 
 // NewClient returns a client that will connect to the server
-// identified by the given token. It is shorthand for
+// identified by the given tailcat address. It is shorthand for
 // &Client{Server: server}; see [Client] for the optional fields that
 // may also be set before the client's first use.
-func NewClient(server ConnBlob) *Client {
+func NewClient(server Addr) *Client {
 	return &Client{Server: server}
 }
 
@@ -1570,12 +1571,12 @@ func (c *Client) initLocked() error {
 	if logf == nil {
 		logf = log.Printf
 	}
-	ci, err := ParseConnBlob(c.Server)
+	ci, err := ParseAddr(c.Server)
 	if err != nil {
 		return err
 	}
 	if ci.ServerDiscoPublic.IsZero() {
-		return errors.New("legacy server address lacks a separate disco key; generate a new address with an updated tailcat server")
+		return errors.New("legacy tailcat address lacks a separate disco key; generate a new address with an updated tailcat server")
 	}
 
 	lb := newLocoBackend(c.nodeKeyLocked())
@@ -1692,9 +1693,9 @@ type PingResult struct {
 }
 
 // ensureStarted brings up the client's network stack on first use:
-// it resolves the server's DERP region if the ConnBlob didn't embed
+// it resolves the server's DERP region if the Addr didn't embed
 // it (possibly fetching the DERP map over the network, bounded by
-// ctx; see [ConnBlob.Resolve] to do that step earlier), connects to
+// ctx; see [Addr.Resolve] to do that step earlier), connects to
 // the DERP relay, and configures WireGuard. Failed attempts are
 // retried on the next call.
 func (c *Client) ensureStarted(ctx context.Context) error {
@@ -1717,7 +1718,7 @@ func (c *Client) ensureStarted(ctx context.Context) error {
 		return err
 	}
 	if len(c.ci.Region) == 0 {
-		return errors.New("no DERP regions in ConnBlob")
+		return errors.New("no DERP regions in tailcat address")
 	}
 	for _, r := range c.ci.Region {
 		mak.Set(&c.lb.dm.Regions, r.RegionID, r)
@@ -1845,7 +1846,7 @@ func (c *Client) DiscoPing(ctx context.Context) (*ipnstate.PingResult, error) {
 //
 // On a Client's first use (any Dial method or [Client.Ping]), the
 // client lazily brings up its network stack, resolving the server's
-// DERP region over the network if the ConnBlob didn't embed it, and
+// DERP region over the network if the Addr didn't embed it, and
 // registers itself with the server.
 func (c *Client) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	if err := c.up(ctx); err != nil {

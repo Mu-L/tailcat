@@ -60,7 +60,7 @@ func TestCPUsageErrors(t *testing.T) {
 	}
 }
 
-func TestCPRejectsInvalidConnBlob(t *testing.T) {
+func TestCPRejectsInvalidAddr(t *testing.T) {
 	err := clientCPMode(false, false, "22", []string{"local.txt", "tc%:remote.txt"})
 	if err == nil || !strings.Contains(err.Error(), "base64 decode") {
 		t.Fatalf("clientCPMode error = %v; want an invalid base64 error", err)
@@ -77,7 +77,7 @@ func TestRecvDropBox(t *testing.T) {
 	e := newTestEnv(t)
 
 	recvDir := t.TempDir()
-	_, blob, _ := e.startServer("recv", recvDir)
+	_, addr, _ := e.startServer("recv", recvDir)
 
 	src := filepath.Join(t.TempDir(), "gift.txt")
 	const content = "drop box content"
@@ -85,7 +85,7 @@ func TestRecvDropBox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", src, blob+":").CombinedOutput()
+	out, err := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", src, addr+":").CombinedOutput()
 	if err != nil {
 		t.Fatalf("cp into recv: %v\n%s", err, out)
 	}
@@ -105,7 +105,7 @@ func TestRecvDropBox(t *testing.T) {
 	}
 
 	back := filepath.Join(t.TempDir(), "back.txt")
-	out, err = e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", blob+":gift.txt", back).CombinedOutput()
+	out, err = e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", addr+":gift.txt", back).CombinedOutput()
 	if err == nil {
 		t.Errorf("cp out of a write-only drop box succeeded:\n%s", out)
 	}
@@ -120,7 +120,7 @@ func TestCPRoundTrip(t *testing.T) {
 	e := newTestEnv(t)
 
 	serveDir := t.TempDir()
-	_, blob, _ := e.startServer("serve", "--files="+serveDir+":rw")
+	_, addr, _ := e.startServer("serve", "--files="+serveDir+":rw")
 
 	srcDir := t.TempDir()
 	src := filepath.Join(srcDir, "src.txt")
@@ -129,7 +129,7 @@ func TestCPRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", src, blob+":uploaded.txt").CombinedOutput()
+	out, err := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", src, addr+":uploaded.txt").CombinedOutput()
 	if err != nil {
 		t.Fatalf("cp upload: %v\n%s", err, out)
 	}
@@ -142,7 +142,7 @@ func TestCPRoundTrip(t *testing.T) {
 	}
 
 	back := filepath.Join(srcDir, "back.txt")
-	out, err = e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", blob+":uploaded.txt", back).CombinedOutput()
+	out, err = e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "cp", addr+":uploaded.txt", back).CombinedOutput()
 	if err != nil {
 		t.Fatalf("cp download: %v\n%s", err, out)
 	}

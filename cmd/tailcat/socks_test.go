@@ -48,16 +48,16 @@ func TestClassifySOCKSAddr(t *testing.T) {
 			want:   socksTarget{toServer: true, port: 80},
 		},
 		{
-			name:   "blob_host",
+			name:   "addr_host",
 			addr:   "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu:8081",
 			lookup: noLookup,
 			want: socksTarget{
-				blob: "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu",
+				addr: "tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu",
 				port: 8081,
 			},
 		},
 		{
-			name:   "tc_prefixed_non_blob_host_uses_lookup",
+			name:   "tc_prefixed_non_addr_host_uses_lookup",
 			addr:   "tcserver:80",
 			lookup: lookupOf("192.0.2.1"),
 			want:   socksTarget{dst: ap("192.0.2.1:80")},
@@ -156,12 +156,12 @@ func TestSOCKSClientKey(t *testing.T) {
 	}
 	cpub := strings.TrimSpace(string(pub))
 
-	_, blob, _ := e.startServer("serve", "--allow="+cpub, "all")
+	_, addr, _ := e.startServer("serve", "--allow="+cpub, "all")
 
 	// The socks client pings the server before starting the proxy and
 	// exits non-zero if the ping fails, so a successful run of a
 	// trivial child command proves the allowlisted handshake worked.
-	args := append([]string{"--key=" + clientKey, "--derpmap-url=" + e.derpMapURL, "socks", blob}, testNoopCommand()...)
+	args := append([]string{"--key=" + clientKey, "--derpmap-url=" + e.derpMapURL, "socks", addr}, testNoopCommand()...)
 	client := e.cmd(args...)
 	if out, err := client.CombinedOutput(); err != nil {
 		t.Fatalf("socks with allowlisted --key failed: %v\n%s", err, out)

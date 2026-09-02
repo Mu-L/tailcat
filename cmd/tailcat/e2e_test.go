@@ -137,11 +137,11 @@ func cacheEnv(t *testing.T) []string {
 	}
 }
 
-// waitBlob polls addrFile every 100ms for up to 30 seconds and
-// returns the trimmed address blob a tailcat server wrote there via
+// waitAddr polls addrFile every 100ms for up to 30 seconds and
+// returns the trimmed tailcat address a tailcat server wrote there via
 // TAILCAT_ADDR_FILE. On timeout it fails the test, including the
 // server's stderr.
-func waitBlob(t *testing.T, addrFile string, stderr *bytes.Buffer) string {
+func waitAddr(t *testing.T, addrFile string, stderr *bytes.Buffer) string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -150,9 +150,9 @@ func waitBlob(t *testing.T, addrFile string, stderr *bytes.Buffer) string {
 		}
 		b, err := os.ReadFile(addrFile)
 		if err == nil && len(b) > 0 {
-			blob := strings.TrimSpace(string(b))
-			t.Logf("server blob: %s", blob)
-			return blob
+			addr := strings.TrimSpace(string(b))
+			t.Logf("server addr: %s", addr)
+			return addr
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -215,7 +215,7 @@ func (e *testEnv) serverCmd(extraFlags ...string) (*exec.Cmd, string) {
 
 // startServer starts a tailcat server with the given extra flags,
 // arranges for it to be killed when the test ends, waits for its
-// address blob, and returns the running command, the blob, and the
+// tailcat address, and returns the running command, the addr, and the
 // server's captured stderr.
 func (e *testEnv) startServer(extraFlags ...string) (*exec.Cmd, string, *bytes.Buffer) {
 	e.t.Helper()
@@ -226,6 +226,6 @@ func (e *testEnv) startServer(extraFlags ...string) (*exec.Cmd, string, *bytes.B
 		e.t.Fatal(err)
 	}
 	e.t.Cleanup(func() { server.Process.Kill() })
-	blob := waitBlob(e.t, addrFile, &stderr)
-	return server, blob, &stderr
+	addr := waitAddr(e.t, addrFile, &stderr)
+	return server, addr, &stderr
 }

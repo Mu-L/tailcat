@@ -51,7 +51,7 @@ func setupSSHEnv(t *testing.T) *testSSHEnv {
 		t.Fatalf("Start: %v", err)
 	}
 
-	client := &tailcat.Client{Server: srv.ConnBlob(), Logf: logf}
+	client := &tailcat.Client{Server: srv.TailcatAddr(), Logf: logf}
 	t.Cleanup(func() { client.Close() })
 
 	tailcat.PingForTest(t, srv, client)

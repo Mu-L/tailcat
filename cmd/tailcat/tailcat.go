@@ -94,7 +94,7 @@ func newRootCommand() *ff.Command {
 
 	serveFS := ff.NewFlagSet("serve").SetParent(rootFS)
 	flagAllow = serveFS.StringLong("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
-	flagFullAddress = serveFS.BoolLong("full-address", "print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
+	flagFullAddress = serveFS.BoolLong("full-address", "print a longer tailcat address with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
 	flagFiles = serveFS.StringLong("files", "", "directory to serve to SFTP clients (scp, sftp) with the 'files' service, with an optional :ro (read-only, the default), :rw (read-write), :wo (flat write-only drop box), or :wo+ (recursive write-only drop box) suffix. If empty, the current directory is served read-only. Giving --files implies the 'files' service.")
 
 	recvFS := ff.NewFlagSet("recv").SetParent(serveFS)
@@ -118,8 +118,8 @@ func newRootCommand() *ff.Command {
 	genkeyDelete = genkeyFS.BoolLong("delete", "delete the key named by --key instead of generating one; --key is required and must be a name, not a path")
 	genkeyList = genkeyFS.BoolLong("list", "list saved key names and exit")
 	genkeyRegion = genkeyFS.StringLong("region", "auto", "region ID, code, or substring to use. Or a hostname(s) comma-separated to use a custom DERP server(s). If 'auto', one is picked based on latency at each server startup. If 'list', list all regions.")
-	genkeyFixedRegion = genkeyFS.BoolLong("fixed-region", "discover the nearest DERP region once, now, and bake it into the key and token, so future server startups (and clients) use it without re-probing")
-	genkeyEmbedDERPMap = genkeyFS.BoolLong("embed-derp-map", "embed the DERP map nodes in the connection string")
+	genkeyFixedRegion = genkeyFS.BoolLong("fixed-region", "discover the nearest DERP region once, now, and bake it into the key and tailcat address, so future server startups (and clients) use it without re-probing")
+	genkeyEmbedDERPMap = genkeyFS.BoolLong("embed-derp-map", "embed the DERP map nodes in the tailcat address")
 
 	return &ff.Command{
 		Name:      "tailcat",
@@ -148,7 +148,7 @@ func newRootCommand() *ff.Command {
 			},
 			{
 				Name:      "ping",
-				Usage:     "tailcat ping [--until-direct] [--timeout=10s] <addrblob>",
+				Usage:     "tailcat ping [--until-direct] [--timeout=10s] <tc-addr>",
 				ShortHelp: "ping a server, reporting DERP or direct paths",
 				LongHelp:  pingLongHelp,
 				Flags:     pingFS,
@@ -158,7 +158,7 @@ func newRootCommand() *ff.Command {
 			},
 			{
 				Name:      "socks",
-				Usage:     "tailcat socks [--listen=<addr:port>] [<addrblob>] [<cmd> [args...]]",
+				Usage:     "tailcat socks [--listen=<addr:port>] [<tc-addr>] [<cmd> [args...]]",
 				ShortHelp: "run a SOCKS5 proxy that dials tailcat servers",
 				LongHelp:  socksLongHelp,
 				Flags:     socksFS,
@@ -198,16 +198,16 @@ func newRootCommand() *ff.Command {
 			forwardCommand(rootFS),
 			{
 				Name:      "parse",
-				Usage:     "tailcat parse <addrblob>",
-				ShortHelp: "decode an address blob and print its fields as JSON",
+				Usage:     "tailcat parse <tc-addr>",
+				ShortHelp: "decode a tailcat address and print its fields as JSON",
 				Exec: func(ctx context.Context, args []string) error {
 					return clientParseMode(args)
 				},
 			},
 			{
 				Name:      "resolve",
-				Usage:     "tailcat resolve <addrblob>",
-				ShortHelp: "expand a short address blob to embed its DERP server info",
+				Usage:     "tailcat resolve <tc-addr>",
+				ShortHelp: "expand a short tailcat address to embed its DERP server info",
 				Exec: func(ctx context.Context, args []string) error {
 					return clientResolveMode(args)
 				},
@@ -263,13 +263,13 @@ func newRootCommand() *ff.Command {
 				return nil
 			}
 			if len(args) > 2 {
-				return usagef("too many arguments; client mode takes <addrblob> [<port>]")
+				return usagef("too many arguments; client mode takes <tc-addr> [<port>]")
 			}
 			var dst string
 			if len(args) == 2 {
 				dst = args[1]
 			}
-			return clientMode(getLogf(), string(addrBlobArg(args[0])), dst)
+			return clientMode(getLogf(), string(tailcatAddrArg(args[0])), dst)
 		},
 	}
 }
@@ -302,13 +302,13 @@ served to "tailcat cp"; see also serve's files service):
 
 Client mode, to default port 1 for stdin/stdout pipe:
 
-	echo hello | tailcat <addrblob>
+	echo hello | tailcat <tc-addr>
 
 Client mode to an explicit port:
 
-	echo "GET / HTTP/1.1..." | tailcat <addrblob> 80
+	echo "GET / HTTP/1.1..." | tailcat <tc-addr> 80
 
-Anywhere an <addrblob> argument is accepted, a DNS name whose
+Anywhere a <tc-addr> argument is accepted, a DNS name whose
 "tailcat=" TXT record contains one may be used instead:
 
 	tailcat ssh example.com
@@ -317,58 +317,58 @@ Client mode, ping. Each pong reports whether it arrived via a DERP
 relay or a direct path. --until-direct keeps pinging (bounded by
 --timeout, default 10s) until a direct path works:
 
-	tailcat ping <addrblob>
-	tailcat ping --until-direct <addrblob>
+	tailcat ping <tc-addr>
+	tailcat ping --until-direct <tc-addr>
 
 Client mode, ssh:
 
-	tailcat ssh [user@]<addrblob>
-	tailcat ssh [user@]<addrblob> <command> [args...]
+	tailcat ssh [user@]<tc-addr>
+	tailcat ssh [user@]<tc-addr> <command> [args...]
 
-Client mode, ssh to specific IP:port via addrblob's exit node:
+Client mode, ssh to specific IP:port via the tailcat address's exit node:
 
-	tailcat ssh -p 10.0.0.1:22 <addrblob>
+	tailcat ssh -p 10.0.0.1:22 <tc-addr>
 
 Client mode, copy files to or from a server (see "tailcat cp --help"
 and serve's files service):
 
-	tailcat cp foo.txt <addrblob>:
-	tailcat cp -r <addrblob>:dir ./dir
+	tailcat cp foo.txt <tc-addr>:
+	tailcat cp -r <tc-addr>:dir ./dir
 
 Client mode, list the files a server offers:
 
-	tailcat ls [-l] <addrblob>[:path]
+	tailcat ls [-l] <tc-addr>[:path]
 
 Client mode, forward local TCP ports to a tailcat server:
 
-	tailcat forward [--bind=<addr>] <addrblob> <[local:]remote> ...
+	tailcat forward [--bind=<addr>] <tc-addr> <[local:]remote> ...
 
 Client mode, run an ephemeral SOCKS5 proxy and pass its address
 as 'all_proxy' environment variable to a child process. Destination
-hostnames that are themselves address blobs are dialed as tailcat
-servers, so the <addrblob> argument is optional:
+hostnames that are themselves tailcat addresses are dialed as tailcat
+servers, so the <tc-addr> argument is optional:
 
-	tailcat socks [--listen=<addr:port>] [<addrblob>] [<cmd> [args...]]
-	tailcat socks <addrblob> curl http://server.tailcat:8081/
-	tailcat socks curl http://<addrblob>:8081/
+	tailcat socks [--listen=<addr:port>] [<tc-addr>] [<cmd> [args...]]
+	tailcat socks <tc-addr> curl http://server.tailcat:8081/
+	tailcat socks curl http://<tc-addr>:8081/
 
 With no <cmd>, the SOCKS5 proxy server runs by itself and prints
 its address.
 
-Parse an address blob and print its encoded fields as JSON:
+Parse a tailcat address and print its encoded fields as JSON:
 
-	tailcat parse <addrblob>
+	tailcat parse <tc-addr>
 
-Resolve a short address blob into a longer self-contained one with
+Resolve a short tailcat address into a longer self-contained one with
 embedded DERP server info (see also serve's --full-address flag):
 
-	tailcat resolve <addrblob>
+	tailcat resolve <tc-addr>
 
 Print the public key of the client key that would be used (see --key):
 
 	tailcat printpub
 
-Generate and save a persistent server key and print its address blob
+Generate and save a persistent server key and print its tailcat address
 (run "tailcat genkey --help" for its flags). The key name "default"
 is magic: server mode uses it automatically once it exists:
 
@@ -391,11 +391,11 @@ Print the full documentation (the project README) with more examples:
 
 Environment:
 
-	TAILCAT_ADDR_FILE: in server mode, write the address blob to the
+	TAILCAT_ADDR_FILE: in server mode, write the tailcat address to the
 	given file path or, with a "tcp:" prefix, send it to that TCP
 	address.`
 
-const serveLongHelp = `Run a tailcat server, printing its address blob for clients to
+const serveLongHelp = `Run a tailcat server, printing its tailcat address for clients to
 connect to. Running tailcat with no arguments is the same as running
 "tailcat serve" with no arguments.
 
@@ -452,23 +452,23 @@ Serve with a saved key (see genkey) and restrict clients:
 
 Environment:
 
-	TAILCAT_ADDR_FILE: write the address blob to the given file
+	TAILCAT_ADDR_FILE: write the tailcat address to the given file
 	path or, with a "tcp:" prefix, send it to that TCP address.`
 
 const recvLongHelp = `Run a server that receives files into the given directory (default:
-the current directory), printing the address blob senders use. It's
+the current directory), printing the tailcat address senders use. It's
 shorthand for a write-only file server:
 
 	tailcat serve --files=<dir>:wo files
 
 The sender copies files in with (see "tailcat cp --help"):
 
-	tailcat cp foo.txt <addrblob>:
+	tailcat cp foo.txt <tc-addr>:
 
 Write-only means senders can't make directories, list or read the
 directory, touch existing files, or learn whether a requested filename
 already exists. Each upload is saved under a new name containing a UTC
-timestamp and random suffix, so the address blob only grants dropping
+timestamp and random suffix, so the tailcat address only grants dropping
 files off. To accept directory trees instead, use the less-private
 --accept-dirs flag; see its description for the trade-off.
 
@@ -479,9 +479,9 @@ Receive into the current directory, or into a given one:
 
 const pingLongHelp = `Examples:
 
-	tailcat ping <addrblob>
-	tailcat ping --until-direct <addrblob>
-	tailcat ping --until-direct --timeout=30s <addrblob>
+	tailcat ping <tc-addr>
+	tailcat ping --until-direct <tc-addr>
+	tailcat ping --until-direct --timeout=30s <tc-addr>
 
 Each pong reports whether it arrived via a DERP relay or a direct
 path:
@@ -496,11 +496,11 @@ it to verify NAT traversal.`
 const socksLongHelp = `Examples:
 
 	tailcat socks
-	tailcat socks <addrblob>
-	tailcat socks --listen=1080 <addrblob>
-	tailcat socks curl http://<addrblob>:8081/
-	tailcat socks <addrblob> curl http://server.tailcat:8081/
-	tailcat socks <addrblob> curl https://example.com/
+	tailcat socks <tc-addr>
+	tailcat socks --listen=1080 <tc-addr>
+	tailcat socks curl http://<tc-addr>:8081/
+	tailcat socks <tc-addr> curl http://server.tailcat:8081/
+	tailcat socks <tc-addr> curl https://example.com/
 
 With a <cmd>, the SOCKS5 proxy runs for the life of that command,
 which is started with the proxy's address in its all_proxy
@@ -509,15 +509,15 @@ environment variable (respected by curl and most CLI tools). With no
 
 The proxy routes each connection by its destination hostname:
 
-A hostname that is itself an address blob names a tailcat server to
-dial, so blobs work directly in URLs and the <addrblob> argument
-isn't needed. (Blobs are case-sensitive; this works with CLI tools
+A hostname that is itself a tailcat address names a tailcat server to
+dial, so addrs work directly in URLs and the <tc-addr> argument
+isn't needed. (Addrs are case-sensitive; this works with CLI tools
 but not with browsers, which lowercase hostnames.)
 
 The magic hostname "server.tailcat" means the server named by the
-<addrblob> argument.
+<tc-addr> argument.
 
-Any other hostname or IP is reached through the <addrblob> server
+Any other hostname or IP is reached through the <tc-addr> server
 acting as an exit node, which works only if the server runs with
 --serve=exit-node.
 
@@ -537,7 +537,7 @@ const genkeyLongHelp = `Examples:
 	tailcat genkey --delete --key=<name>
 
 By default genkey generates and saves a server key and prints its
-address blob. The key name "default" is magic: server mode loads it
+tailcat address. The key name "default" is magic: server mode loads it
 automatically once it exists. Any other name works too, named at
 serve time with --key=<name>, to keep multiple identities.
 
@@ -547,8 +547,8 @@ automatically load the magic name "client-default" once it exists.
 
 A server key normally picks its DERP relay region by latency at each
 server startup (--region=auto). The --region and --fixed-region
-flags bake a region into the key and its address blob instead; an
-address blob published in DNS should do that, so clients and future
+flags bake a region into the key and its tailcat address instead; a
+tailcat address published in DNS should do that, so clients and future
 server restarts all rendezvous in the same place. --region takes a
 region ID, code, or name substring ("list" prints the choices), or
 one or more comma-separated DERP server hostnames to use relays that
@@ -637,11 +637,11 @@ func main() {
 	os.Exit(1)
 }
 
-// addrBlobArg interprets a CLI destination argument as either a
-// "tc"-prefixed address blob or a DNS name whose "tailcat=" TXT
+// tailcatAddrArg interprets a CLI destination argument as either a
+// "tc"-prefixed tailcat address or a DNS name whose "tailcat=" TXT
 // record holds one. It exits the process on failure.
-func addrBlobArg(arg string) tailcat.ConnBlob {
-	blob, dnsName, err := classifyAddrBlobArg(arg)
+func tailcatAddrArg(arg string) tailcat.Addr {
+	addr, dnsName, err := classifyTailcatAddrArg(arg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -655,31 +655,31 @@ func addrBlobArg(arg string) tailcat.ConnBlob {
 		}
 		for _, txt := range txts {
 			if suf, ok := strings.CutPrefix(txt, "tailcat="); ok {
-				return tailcat.ConnBlob(strings.TrimSpace(suf))
+				return tailcat.Addr(strings.TrimSpace(suf))
 			}
 		}
 		log.Fatalf("no \"tailcat=\" TXT record found for %q", dnsName)
 	}
-	return blob
+	return addr
 }
 
-// classifyAddrBlobArg classifies arg without performing a DNS lookup. It
-// rejects DNS-looking input containing a valid connection blob as a label so
-// that pasting a blob with an adjacent period or other dotted suffix cannot
-// disclose the blob in a DNS query.
-func classifyAddrBlobArg(arg string) (blob tailcat.ConnBlob, dnsName string, err error) {
-	blob = tailcat.ConnBlob(arg)
-	if _, err := tailcat.ParseConnBlob(blob); err == nil {
-		return blob, "", nil
+// classifyTailcatAddrArg classifies arg without performing a DNS lookup. It
+// rejects DNS-looking input containing a valid tailcat address as a label so
+// that pasting an address with an adjacent period or other dotted suffix cannot
+// disclose the address in a DNS query.
+func classifyTailcatAddrArg(arg string) (addr tailcat.Addr, dnsName string, err error) {
+	addr = tailcat.Addr(arg)
+	if _, err := tailcat.ParseAddr(addr); err == nil {
+		return addr, "", nil
 	}
 	if !strings.Contains(arg, ".") {
-		return "", "", fmt.Errorf("argument %q is neither a valid connection blob nor a DNS name", arg)
+		return "", "", fmt.Errorf("argument %q is neither a valid tailcat address nor a DNS name", arg)
 	}
 
 	name := strings.TrimSuffix(arg, ".")
 	for label := range strings.SplitSeq(name, ".") {
-		if _, err := tailcat.ParseConnBlob(tailcat.ConnBlob(label)); err == nil {
-			return "", "", errors.New("argument contains a valid connection blob as a DNS label; refusing DNS lookup")
+		if _, err := tailcat.ParseAddr(tailcat.Addr(label)); err == nil {
+			return "", "", errors.New("argument contains a valid tailcat address as a DNS label; refusing DNS lookup")
 		}
 	}
 	if err := validateDNSName(name); err != nil {
@@ -689,7 +689,7 @@ func classifyAddrBlobArg(arg string) (blob tailcat.ConnBlob, dnsName string, err
 }
 
 // validateDNSName validates the conservative ASCII hostname syntax accepted
-// for connection-token TXT lookups.
+// for tailcat address TXT lookups.
 func validateDNSName(name string) error {
 	if name == "" {
 		return errors.New("name is empty")
@@ -743,9 +743,9 @@ func clientKey() key.NodePrivate {
 
 // newClient returns a [tailcat.Client] configured with the global
 // --derpmap-url flag and the disk DERP map cache.
-func newClient(logf logger.Logf, blob tailcat.ConnBlob, priv key.NodePrivate) *tailcat.Client {
+func newClient(logf logger.Logf, addr tailcat.Addr, priv key.NodePrivate) *tailcat.Client {
 	return &tailcat.Client{
-		Server:       blob,
+		Server:       addr,
 		Key:          priv,
 		Logf:         logf,
 		DERPMapURL:   *flagDERPMapURL,
@@ -809,9 +809,9 @@ func (c derpMapCache) Put(url string, data []byte, etag string) error {
 
 func clientPingMode(logf logger.Logf, untilDirect bool, timeout time.Duration, args []string) error {
 	if len(args) != 1 {
-		return usagef("ping requires one <addrblob> argument")
+		return usagef("ping requires one <tc-addr> argument")
 	}
-	cl := newClient(logf, addrBlobArg(args[0]), clientKey())
+	cl := newClient(logf, tailcatAddrArg(args[0]), clientKey())
 	defer cl.Close()
 
 	deadline := time.Now().Add(timeout)
@@ -844,7 +844,7 @@ func clientPingMode(logf logger.Logf, untilDirect bool, timeout time.Duration, a
 }
 
 func clientMode(logf logger.Logf, connStr, optDest string) error {
-	cl := newClient(logf, tailcat.ConnBlob(connStr), clientKey())
+	cl := newClient(logf, tailcat.Addr(connStr), clientKey())
 
 	var dial func(context.Context) (net.Conn, error)
 	switch {
@@ -932,20 +932,20 @@ func normalizeListenAddrPort(s string) string {
 func clientSOCKSMode(logf logger.Logf, listen string, args []string) error {
 	listenAddrPort := normalizeListenAddrPort(listen)
 
-	// The address blob argument is optional: destination hostnames that
-	// are themselves address blobs are dialed directly (see
+	// The tailcat address argument is optional: destination hostnames that
+	// are themselves tailcat addresses are dialed directly (see
 	// classifySOCKSAddr), so a fixed server is only needed for the
 	// server.tailcat magic name and exit-node destinations.
-	var blob tailcat.ConnBlob
+	var addr tailcat.Addr
 	if len(args) > 0 {
-		if _, err := tailcat.ParseConnBlob(tailcat.ConnBlob(args[0])); err == nil {
-			blob = tailcat.ConnBlob(args[0])
+		if _, err := tailcat.ParseAddr(tailcat.Addr(args[0])); err == nil {
+			addr = tailcat.Addr(args[0])
 			args = args[1:]
 		} else if strings.Contains(args[0], ".") {
 			if _, err := exec.LookPath(args[0]); err != nil {
 				// Not a runnable command, so treat it as a DNS name
-				// holding an address blob in a TXT record.
-				blob = addrBlobArg(args[0])
+				// holding a tailcat address in a TXT record.
+				addr = tailcatAddrArg(args[0])
 				args = args[1:]
 			}
 		}
@@ -957,8 +957,8 @@ func clientSOCKSMode(logf logger.Logf, listen string, args []string) error {
 	clientPriv := clientKey()
 
 	var cl *tailcat.Client
-	if blob != "" {
-		cl = newClient(logf, blob, clientPriv)
+	if addr != "" {
+		cl = newClient(logf, addr, clientPriv)
 		pi, err := cl.Ping(context.Background())
 		if err != nil {
 			log.Fatalf("tailcat Ping: %v", err)
@@ -967,11 +967,11 @@ func clientSOCKSMode(logf logger.Logf, listen string, args []string) error {
 	}
 
 	var clientsMu sync.Mutex
-	clients := map[tailcat.ConnBlob]*tailcat.Client{}
+	clients := map[tailcat.Addr]*tailcat.Client{}
 	if cl != nil {
-		clients[blob] = cl
+		clients[addr] = cl
 	}
-	clientForBlob := func(b tailcat.ConnBlob) *tailcat.Client {
+	clientForAddr := func(b tailcat.Addr) *tailcat.Client {
 		clientsMu.Lock()
 		defer clientsMu.Unlock()
 		if c, ok := clients[b]; ok {
@@ -993,11 +993,11 @@ func clientSOCKSMode(logf logger.Logf, listen string, args []string) error {
 			if err != nil {
 				return nil, err
 			}
-			if dst.blob != "" {
-				return clientForBlob(dst.blob).DialTCPPort(ctx, dst.port)
+			if dst.addr != "" {
+				return clientForAddr(dst.addr).DialTCPPort(ctx, dst.port)
 			}
 			if cl == nil {
-				return nil, errors.New("no address blob argument was given to \"tailcat socks\"; only address blob hostnames can be dialed")
+				return nil, errors.New("no tailcat address argument was given to \"tailcat socks\"; only tailcat address hostnames can be dialed")
 			}
 			if dst.toServer {
 				return cl.DialTCPPort(ctx, dst.port)
@@ -1030,10 +1030,10 @@ func clientSOCKSMode(logf logger.Logf, listen string, args []string) error {
 
 // socksTarget is where a SOCKS5 destination address should be dialed.
 type socksTarget struct {
-	toServer bool             // dial the tailcat server from the command line
-	blob     tailcat.ConnBlob // if non-empty, the address blob hostname to dial
-	port     uint16           // the port to dial, if toServer or blob is set
-	dst      netip.AddrPort   // the IP:port to dial through the server as an exit node, otherwise
+	toServer bool           // dial the tailcat server from the command line
+	addr     tailcat.Addr   // if non-empty, the tailcat address hostname to dial
+	port     uint16         // the port to dial, if toServer or addr is set
+	dst      netip.AddrPort // the IP:port to dial through the server as an exit node, otherwise
 }
 
 // lookupNetIP resolves host using the local resolver, for
@@ -1042,10 +1042,10 @@ func lookupNetIP(ctx context.Context, host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
-// classifySOCKSAddr decides where the SOCKS5 destination addr should be
+// classifySOCKSAddr decides where the SOCKS5 destination address should be
 // dialed. The magic hostname "server.tailcat" (or an empty host) means the
-// tailcat server itself. A hostname that is a valid address blob (which can
-// never contain a dot) means the server that blob names, letting blobs be
+// tailcat server itself. A hostname that is a valid tailcat address (which can
+// never contain a dot) means the server that address names, letting addresses be
 // used directly in URLs. IP literals and hostnames resolved with lookup are
 // reached through the server acting as an exit node, preferring IPv4
 // addresses because they ride the NAT64 mapping and the server may not have
@@ -1064,8 +1064,8 @@ func classifySOCKSAddr(ctx context.Context, lookup func(context.Context, string)
 		return socksTarget{toServer: true, port: uint16(portNum)}, nil
 	}
 	if strings.HasPrefix(host, "tc") && !strings.Contains(host, ".") {
-		if _, err := tailcat.ParseConnBlob(tailcat.ConnBlob(host)); err == nil {
-			return socksTarget{blob: tailcat.ConnBlob(host), port: uint16(portNum)}, nil
+		if _, err := tailcat.ParseAddr(tailcat.Addr(host)); err == nil {
+			return socksTarget{addr: tailcat.Addr(host), port: uint16(portNum)}, nil
 		}
 	}
 	ip, err := netip.ParseAddr(host)
@@ -1090,9 +1090,9 @@ func classifySOCKSAddr(ctx context.Context, lookup func(context.Context, string)
 
 func clientParseMode(args []string) error {
 	if len(args) != 1 {
-		return usagef("parse requires one <addrblob> argument")
+		return usagef("parse requires one <tc-addr> argument")
 	}
-	v, err := tailcat.ParseConnBlobRaw(tailcat.ConnBlob(args[0]))
+	v, err := tailcat.ParseAddrRaw(tailcat.Addr(args[0]))
 	if err != nil {
 		return err
 	}
@@ -1103,15 +1103,15 @@ func clientParseMode(args []string) error {
 
 func clientResolveMode(args []string) error {
 	if len(args) != 1 {
-		return usagef("resolve requires one <addrblob> argument")
+		return usagef("resolve requires one <tc-addr> argument")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rb, err := addrBlobArg(args[0]).Resolve(ctx, tailcat.DERPMapURL(*flagDERPMapURL), derpMapCache{})
+	resolved, err := tailcatAddrArg(args[0]).Resolve(ctx, tailcat.DERPMapURL(*flagDERPMapURL), derpMapCache{})
 	if err != nil {
 		return err
 	}
-	fmt.Println(rb)
+	fmt.Println(resolved)
 	return nil
 }
 
@@ -1198,7 +1198,7 @@ func server(logf logger.Logf, serveSpec string) {
 	}
 	ci.ServerPublic = tailcat.NodePublic{NodePublic: priv.Public()}
 	ci.ServerDiscoPublic = tailcat.DiscoPublicForNode(priv)
-	connStr := ci.ConnBlob()
+	connStr := ci.Addr()
 
 	s := &tailcat.Server{Key: priv, Logf: logf, Region: reg}
 	sshServices := services.Contains("no-auth-ssh") || services.Contains("files")
@@ -1706,7 +1706,7 @@ func genKey(args []string) error {
 		log.Fatal(err)
 	}
 	fmt.Fprintf(os.Stderr, "# wrote file to %v\n", *key)
-	fmt.Println(priv.Public.ConnBlob())
+	fmt.Println(priv.Public.Addr())
 	return nil
 }
 

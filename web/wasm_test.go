@@ -256,7 +256,7 @@ func TestBrowserReceives(t *testing.T) {
 	t.Logf("browser listening at %v", addr)
 
 	cl := &tailcat.Client{
-		Server:     tailcat.ConnBlob(addr),
+		Server:     tailcat.Addr(addr),
 		Logf:       mkLogf(t, "client"),
 		DERPMapURL: srv.URL + "/derpmap.json",
 	}
@@ -349,8 +349,8 @@ func TestBrowserSends(t *testing.T) {
 	if err := s.Start(); err != nil {
 		t.Fatalf("Server.Start: %v", err)
 	}
-	blob := s.ConnBlob()
-	t.Logf("Go server listening at %v", blob)
+	addr := s.TailcatAddr()
+	t.Logf("Go server listening at %v", addr)
 
 	browserCtx := launchChrome(t, bin)
 	runCtx, cancelRun := context.WithTimeout(browserCtx, 120*time.Second)
@@ -358,7 +358,7 @@ func TestBrowserSends(t *testing.T) {
 
 	pageURL := srv.URL + "/?" + url.Values{
 		"mode":  {"send"},
-		"addr":  {string(blob)},
+		"addr":  {string(addr)},
 		"bytes": {strconv.Itoa(transferSize)},
 	}.Encode()
 	t.Logf("navigating to %s", pageURL)
@@ -426,8 +426,8 @@ func TestBrowserSendsTextUI(t *testing.T) {
 	if err := s.Start(); err != nil {
 		t.Fatalf("Server.Start: %v", err)
 	}
-	blob := s.ConnBlob()
-	t.Logf("Go server listening at %v", blob)
+	addr := s.TailcatAddr()
+	t.Logf("Go server listening at %v", addr)
 
 	browserCtx := launchChrome(t, bin)
 	runCtx, cancelRun := context.WithTimeout(browserCtx, 120*time.Second)
@@ -439,7 +439,7 @@ func TestBrowserSendsTextUI(t *testing.T) {
 		chromedp.Navigate(srv.URL+"/"),
 		chromedp.Poll("window.tcTest && window.tcTest.ready === true", &ready,
 			chromedp.WithPollingTimeout(60*time.Second)),
-		chromedp.SetValue("#send-addr", string(blob)),
+		chromedp.SetValue("#send-addr", string(addr)),
 		chromedp.SetValue("#send-text", wantText),
 		chromedp.Click("#send-text-btn"),
 		chromedp.Poll("window.tcTest.sendDone === true", &sendDone,
@@ -488,7 +488,7 @@ func TestBrowserReceivesTextUI(t *testing.T) {
 	t.Logf("browser listening at %v", addr)
 
 	cl := &tailcat.Client{
-		Server:     tailcat.ConnBlob(addr),
+		Server:     tailcat.Addr(addr),
 		Logf:       mkLogf(t, "client"),
 		DERPMapURL: srv.URL + "/derpmap.json",
 	}

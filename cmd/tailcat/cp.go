@@ -34,20 +34,20 @@ func cpCommand(parent *ff.FlagSet) *ff.Command {
 	}
 }
 
-const cpLongHelp = `Remote paths are written <addrblob>:[path], like scp's host:path.
+const cpLongHelp = `Remote paths are written <tc-addr>:[path], like scp's host:path.
 Paths are relative to the server's served directory ("tailcat serve
 files"), or to the remote home directory for a full SSH server
 ("tailcat serve no-auth-ssh"). A DNS name with a "tailcat=" TXT
-record works in place of an address blob.
+record works in place of a tailcat address.
 
 Copy a file to a server, keeping its name, and fetch it back:
 
-	tailcat cp foo.txt <addrblob>:
-	tailcat cp <addrblob>:foo.txt copy.txt
+	tailcat cp foo.txt <tc-addr>:
+	tailcat cp <tc-addr>:foo.txt copy.txt
 
 Copy a directory tree to a directory the server offers read-write:
 
-	tailcat cp -r ./photos <addrblob>:photos
+	tailcat cp -r ./photos <tc-addr>:photos
 
 The actual copying is done by the system scp, with the connection
 routed through tailcat, so scp's progress display applies.`
@@ -65,26 +65,26 @@ func clientCPMode(recursive, preserve bool, portOrIPPort string, args []string) 
 
 	// Find the server named by the remote arguments before translating
 	// them to scp host:path arguments.
-	blob := ""
+	addr := ""
 	for _, arg := range args {
 		host, _, ok := splitRemoteArg(arg)
 		if !ok {
 			continue
 		}
-		if blob != "" && host != blob {
-			return usagef("all remote paths must name the same server (%q and %q differ)", blob, host)
+		if addr != "" && host != addr {
+			return usagef("all remote paths must name the same server (%q and %q differ)", addr, host)
 		}
-		blob = host
+		addr = host
 	}
-	if blob == "" {
-		return usagef("no remote <addrblob>:path argument; nothing to copy through tailcat")
+	if addr == "" {
+		return usagef("no remote <tc-addr>:path argument; nothing to copy through tailcat")
 	}
-	blob, err = validatedConnBlob(blob)
+	addr, err = validatedAddr(addr)
 	if err != nil {
 		return err
 	}
 
-	// Give scp a short deterministic host label; the validated blob does
+	// Give scp a short deterministic host label; the validated address does
 	// the actual routing inside ProxyCommand.
 	scpArgs := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -93,7 +93,7 @@ func clientCPMode(recursive, preserve bool, portOrIPPort string, args []string) 
 			scpArgs = append(scpArgs, arg)
 			continue
 		}
-		scpArgs = append(scpArgs, sshDestHost(blob)+":"+path)
+		scpArgs = append(scpArgs, sshDestHost(addr)+":"+path)
 	}
 
 	exe, err := os.Executable()
@@ -104,7 +104,7 @@ func clientCPMode(recursive, preserve bool, portOrIPPort string, args []string) 
 	if err != nil {
 		log.Fatalf("no scp found in $PATH: %v", err)
 	}
-	proxyCommand, err := sshProxyCommand(exe, *flagKey, *flagDERPMapURL, blob, portOrIPPort)
+	proxyCommand, err := sshProxyCommand(exe, *flagKey, *flagDERPMapURL, addr, portOrIPPort)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func clientCPMode(recursive, preserve bool, portOrIPPort string, args []string) 
 }
 
 // splitRemoteArg splits an scp-style remote argument "host:path",
-// where host is an address blob or a DNS name with a "tailcat=" TXT
+// where host is a tailcat address or a DNS name with a "tailcat=" TXT
 // record. ok reports whether arg is remote: it has a colon that
 // isn't preceded by a path separator, and the part before the colon
 // is longer than one character (so a Windows drive path like

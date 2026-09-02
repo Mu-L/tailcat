@@ -21,7 +21,7 @@ trying to attack you.
 We recognize that people will inevitably and increasingly use tailcat
 between mutually untrusting parties, and we do want to harden it for
 those use cases over time. Until then, be thoughtful about accepting
-connection tokens from, or serving powerful things (shells, writable
+tailcat addresses from, or serving powerful things (shells, writable
 directories, exit nodes) to, people you don't trust. Security reports
 that help us get there are very welcome.
 
@@ -48,7 +48,7 @@ Thanks to the people who've reported security issues in tailcat:
   * Invalid tailcat addresses were passed unvalidated to ssh/scp
     child processes, fixed in
     [aba9d9ba2](https://github.com/tailscale/tailcat/commit/aba9d9ba255380ab58b12abf8dbcb17cf1f5a649).
-  * Mistyped connection tokens leaked to DNS as hostname lookups,
+  * Mistyped tailcat addresses leaked to DNS as hostname lookups,
     fixed in
     [5cb1ec356](https://github.com/tailscale/tailcat/commit/5cb1ec3566617f5667764456fd1f2ee7cb46a366).
 * [Dinnerb0ne](https://github.com/Dinnerb0ne) reported a panic

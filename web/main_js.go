@@ -90,7 +90,7 @@ func tailcatListen(this js.Value, args []js.Value) any {
 			// same address across page loads.
 			pk.Public.RegionID = reg.RegionID
 		}
-		blob := pk.Public.ConnBlob()
+		addr := pk.Public.Addr()
 		keyOut, err := json.Marshal(pk)
 		if err != nil {
 			return nil, err
@@ -109,7 +109,7 @@ func tailcatListen(this js.Value, args []js.Value) any {
 			return nil, fmt.Errorf("Server.Start: %w", err)
 		}
 		return map[string]any{
-			"addr":           string(blob),
+			"addr":           string(addr),
 			"privateKeyJSON": string(keyOut),
 			"close": js.FuncOf(func(this js.Value, args []js.Value) any {
 				srv.Close()
@@ -159,7 +159,7 @@ func tailcatDial(this js.Value, args []js.Value) any {
 			priv = pk.Private
 		}
 		cl := &tailcat.Client{
-			Server:     tailcat.ConnBlob(addr),
+			Server:     tailcat.Addr(addr),
 			Key:        priv,
 			Logf:       logf,
 			DERPMapURL: derpMapURL,

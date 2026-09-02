@@ -30,9 +30,9 @@ func TestServeNoAuthSSH(t *testing.T) {
 	}
 	e := newTestEnv(t)
 
-	_, blob, _ := e.startServer("--serve=no-auth-ssh")
+	_, addr, _ := e.startServer("--serve=no-auth-ssh")
 
-	client := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "ssh", blob, "echo", "hi")
+	client := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "ssh", addr, "echo", "hi")
 	done := make(chan struct{})
 	go func() {
 		select {

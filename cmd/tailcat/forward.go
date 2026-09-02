@@ -24,15 +24,15 @@ func forwardCommand(parent *ff.FlagSet) *ff.Command {
 	bind := fs.StringLong("bind", "127.0.0.1", "listen address; used as the local address when a mapping only specifies a port")
 	return &ff.Command{
 		Name:      "forward",
-		Usage:     "tailcat forward [flags] <addrblob> <[local:]remote> [<[local:]remote> ...]",
+		Usage:     "tailcat forward [flags] <tc-addr> <[local:]remote> [<[local:]remote> ...]",
 		ShortHelp: "forward local TCP ports to a tailcat server",
 		LongHelp: `Listen on local TCP ports and forward connections to ports served by a tailcat server.
 
 A mapping with one port uses the same local and remote port. A mapping with
 local:remote uses different local and remote ports. For example:
 
-	tailcat forward <addrblob> 8080
-	tailcat forward --bind=0.0.0.0 <addrblob> 18080:8080`,
+	tailcat forward <tc-addr> 8080
+	tailcat forward --bind=0.0.0.0 <tc-addr> 18080:8080`,
 		Flags: fs,
 		Exec: func(ctx context.Context, args []string) error {
 			return runForward(ctx, getLogf(), *bind, args)
@@ -42,10 +42,10 @@ local:remote uses different local and remote ports. For example:
 
 func runForward(ctx context.Context, logf logger.Logf, bind string, args []string) error {
 	if len(args) < 2 {
-		return usagef("forward takes an <addrblob> and at least one port mapping")
+		return usagef("forward takes a <tc-addr> and at least one port mapping")
 	}
 
-	cl := newClient(logf, addrBlobArg(args[0]), clientKey())
+	cl := newClient(logf, tailcatAddrArg(args[0]), clientKey())
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

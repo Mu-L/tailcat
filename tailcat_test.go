@@ -77,9 +77,9 @@ func TestTailcat(t *testing.T) {
 	if err := s.Start(); err != nil {
 		t.Fatalf("server Start: %v", err)
 	}
-	t.Logf("server: %v", s.ConnBlob())
+	t.Logf("server: %v", s.TailcatAddr())
 
-	c := &Client{Server: s.ConnBlob(), Logf: mkLogger(t, "client")}
+	c := &Client{Server: s.TailcatAddr(), Logf: mkLogger(t, "client")}
 	t.Cleanup(func() { c.Close() })
 
 	t.Logf("Client is %v", c.PublicKey())
@@ -171,7 +171,7 @@ func TestHalfClose(t *testing.T) {
 		t.Fatalf("server Start: %v", err)
 	}
 
-	c := &Client{Server: s.ConnBlob(), Logf: mkLogger(t, "client")}
+	c := &Client{Server: s.TailcatAddr(), Logf: mkLogger(t, "client")}
 	t.Cleanup(func() { c.Close() })
 	PingForTest(t, s, c)
 
@@ -253,7 +253,7 @@ func TestServerCloseClosesActiveConnections(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 
-	c := &Client{Server: s.ConnBlob(), Key: clientKey, Logf: mkLogger(t, "client")}
+	c := &Client{Server: s.TailcatAddr(), Key: clientKey, Logf: mkLogger(t, "client")}
 	t.Cleanup(func() { c.Close() })
 	PingForTest(t, s, c)
 
@@ -284,14 +284,14 @@ func TestServerCloseClosesActiveConnections(t *testing.T) {
 	}
 }
 
-func TestConnBlob(t *testing.T) {
+func TestAddr(t *testing.T) {
 	akey := func(a [32]byte) NodePublic {
 		return NodePublic{key.NodePublicFromRaw32(mem.B(a[:]))}
 	}
 	tests := []struct {
 		name string
 		ci   ConnInfo
-		want ConnBlob  // if non-empty, check exact encoding
+		want Addr      // if non-empty, check exact encoding
 		back *ConnInfo // if non-nil, round-tripped form we want
 	}{
 		{
@@ -404,28 +404,28 @@ func TestConnBlob(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.ci.ConnBlob()
+			got := tt.ci.Addr()
 			t.Logf("length: %v (%v)", len(got), got)
 			if tt.want != "" && got != tt.want {
-				t.Fatalf("ConnInfo.ConnBlob marshal wrong.\n got: %s\nwant: %s\n", got, tt.want)
+				t.Fatalf("ConnInfo.Addr marshal wrong.\n got: %s\nwant: %s\n", got, tt.want)
 			}
 
-			gotCI, err := ParseConnBlob(got)
+			gotCI, err := ParseAddr(got)
 			if err != nil {
-				t.Fatalf("ParseConnBlob: %v", err)
+				t.Fatalf("ParseAddr: %v", err)
 			}
 			want := tt.ci
 			if tt.back != nil {
 				want = *tt.back
 			}
 			if diff := cmp.Diff(want, gotCI); diff != "" {
-				t.Errorf("ParseConnBlob result back diff:\n%s", diff)
+				t.Errorf("ParseAddr result back diff:\n%s", diff)
 			}
 		})
 	}
 }
 
-func TestConnBlobSeparateDiscoKey(t *testing.T) {
+func TestAddrSeparateDiscoKey(t *testing.T) {
 	priv := key.NewNode()
 	discoPub := DiscoPublicForNode(priv)
 	ci := ConnInfo{
@@ -433,7 +433,7 @@ func TestConnBlobSeparateDiscoKey(t *testing.T) {
 		ServerDiscoPublic: discoPub,
 		RegionID:          10,
 	}
-	got, err := ParseConnBlob(ci.ConnBlob())
+	got, err := ParseAddr(ci.Addr())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,29 +448,29 @@ func TestConnBlobSeparateDiscoKey(t *testing.T) {
 	}
 	// Reproduce the report's reconstruction strategy: treating the public
 	// key visible in a direct-path disco frame as the server node key must
-	// not recover the connection address.
+	// not recover the tailcat address.
 	reconstructed := (&ConnInfo{
 		ServerPublic: NodePublic{key.NodePublicFromRaw32(mem.B(discoPub.AppendTo(nil)))},
 		RegionID:     ci.RegionID,
-	}).ConnBlob()
-	if reconstructed == ci.ConnBlob() {
-		t.Fatal("disco public key can reconstruct the connection address")
+	}).Addr()
+	if reconstructed == ci.Addr() {
+		t.Fatal("disco public key can reconstruct the tailcat address")
 	}
 }
 
-func TestClientRejectsLegacyConnBlob(t *testing.T) {
+func TestClientRejectsLegacyAddr(t *testing.T) {
 	legacy := (&ConnInfo{
 		ServerPublic: NodePublic{key.NewNode().Public()},
 		RegionID:     10,
-	}).ConnBlob()
+	}).Addr()
 	c := NewClient(legacy)
 	_, err := c.Ping(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "legacy server address") {
+	if err == nil || !strings.Contains(err.Error(), "legacy tailcat address") {
 		t.Fatalf("Ping error = %v; want legacy address rejection", err)
 	}
 }
 
-func TestParseConnBlobMalformedPublicKey(t *testing.T) {
+func TestParseAddrMalformedPublicKey(t *testing.T) {
 	for name, keyBytes := range map[string][]byte{
 		"short": make([]byte, key.NodePublicRawLen-1),
 		"long":  make([]byte, key.NodePublicRawLen+1),
@@ -480,7 +480,7 @@ func TestParseConnBlobMalformedPublicKey(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cb := ConnBlob("tc" + base64.RawURLEncoding.EncodeToString(raw))
+			addr := Addr("tc" + base64.RawURLEncoding.EncodeToString(raw))
 			assertParseError := func(name string, parse func() error) {
 				t.Helper()
 				defer func() {
@@ -492,19 +492,19 @@ func TestParseConnBlobMalformedPublicKey(t *testing.T) {
 					t.Errorf("%s unexpectedly accepted malformed public key", name)
 				}
 			}
-			assertParseError("ParseConnBlob", func() error {
-				_, err := ParseConnBlob(cb)
+			assertParseError("ParseAddr", func() error {
+				_, err := ParseAddr(addr)
 				return err
 			})
-			assertParseError("ParseConnBlobRaw", func() error {
-				_, err := ParseConnBlobRaw(cb)
+			assertParseError("ParseAddrRaw", func() error {
+				_, err := ParseAddrRaw(addr)
 				return err
 			})
 		})
 	}
 }
 
-func TestParseConnBlobMalformedDiscoPublicKey(t *testing.T) {
+func TestParseAddrMalformedDiscoPublicKey(t *testing.T) {
 	for name, keyBytes := range map[string][]byte{
 		"short": make([]byte, key.DiscoPublicRawLen-1),
 		"long":  make([]byte, key.DiscoPublicRawLen+1),
@@ -517,9 +517,9 @@ func TestParseConnBlobMalformedDiscoPublicKey(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cb := ConnBlob("tc" + base64.RawURLEncoding.EncodeToString(raw))
-			if _, err := ParseConnBlob(cb); err == nil {
-				t.Fatal("ParseConnBlob unexpectedly accepted malformed disco public key")
+			addr := Addr("tc" + base64.RawURLEncoding.EncodeToString(raw))
+			if _, err := ParseAddr(addr); err == nil {
+				t.Fatal("ParseAddr unexpectedly accepted malformed disco public key")
 			}
 		})
 	}
@@ -550,49 +550,49 @@ func TestFetchDERPMapMemoryCache(t *testing.T) {
 	}
 }
 
-// TestParseConnBlobNullInArrays checks that ParseConnBlob rejects blobs whose
+// TestParseAddrNullInArrays checks that ParseAddr rejects addresses whose
 // region or node arrays contain a CBOR null. Those decode to nil pointers, and
-// before this was checked they panicked when dereferenced. Blobs come from
+// before this was checked they panicked when dereferenced. Addrs come from
 // untrusted places, so a panic here takes down the process.
-func TestParseConnBlobNullInArrays(t *testing.T) {
-	blob := func(t *testing.T, m map[string]any) ConnBlob {
+func TestParseAddrNullInArrays(t *testing.T) {
+	addr := func(t *testing.T, m map[string]any) Addr {
 		t.Helper()
 		b, err := cbor.Marshal(m)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return ConnBlob("tc" + base64.RawURLEncoding.EncodeToString(b))
+		return Addr("tc" + base64.RawURLEncoding.EncodeToString(b))
 	}
 	pub := key.NewNode().Public().AppendTo(nil)
 
 	tests := []struct {
 		name string
-		blob ConnBlob
+		addr Addr
 	}{
 		{
 			name: "null_region",
-			blob: blob(t, map[string]any{"p": pub, "r": []any{nil}}),
+			addr: addr(t, map[string]any{"p": pub, "r": []any{nil}}),
 		},
 		{
 			name: "null_node",
-			blob: blob(t, map[string]any{"p": pub, "r": []any{
+			addr: addr(t, map[string]any{"p": pub, "r": []any{
 				map[string]any{"i": 1, "N": []any{nil}},
 			}}),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := ParseConnBlob(tt.blob); err == nil {
-				t.Fatal("ParseConnBlob succeeded; want an error")
+			if _, err := ParseAddr(tt.addr); err == nil {
+				t.Fatal("ParseAddr succeeded; want an error")
 			}
 		})
 	}
 }
 
-// TestParseConnBlobRawKeepsNulls documents that the raw form stays permissive:
-// "tailcat parse" is a diagnostic for looking at a broken blob, so it shows the
+// TestParseAddrRawKeepsNulls documents that the raw form stays permissive:
+// "tailcat parse" is a diagnostic for looking at a broken address, so it shows the
 // nulls instead of rejecting them.
-func TestParseConnBlobRawKeepsNulls(t *testing.T) {
+func TestParseAddrRawKeepsNulls(t *testing.T) {
 	b, err := cbor.Marshal(map[string]any{
 		"p": key.NewNode().Public().AppendTo(nil),
 		"r": []any{nil},
@@ -600,10 +600,10 @@ func TestParseConnBlobRawKeepsNulls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cb := ConnBlob("tc" + base64.RawURLEncoding.EncodeToString(b))
-	got, err := ParseConnBlobRaw(cb)
+	addr := Addr("tc" + base64.RawURLEncoding.EncodeToString(b))
+	got, err := ParseAddrRaw(addr)
 	if err != nil {
-		t.Fatalf("ParseConnBlobRaw: %v", err)
+		t.Fatalf("ParseAddrRaw: %v", err)
 	}
 	w, ok := got.(*wireConnInfo)
 	if !ok {

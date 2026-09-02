@@ -26,7 +26,7 @@ func lsCommand(parent *ff.FlagSet) *ff.Command {
 	long := fs.BoolShort('l', "long listing: permissions, size, and modification time")
 	return &ff.Command{
 		Name:      "ls",
-		Usage:     "tailcat ls [-l] <addrblob>[:path]",
+		Usage:     "tailcat ls [-l] <tc-addr>[:path]",
 		ShortHelp: "list files on a tailcat server",
 		LongHelp:  lsLongHelp,
 		Flags:     fs,
@@ -42,16 +42,16 @@ is involved.
 
 List the served directory, or a path under it:
 
-	tailcat ls <addrblob>
-	tailcat ls -l <addrblob>:photos
+	tailcat ls <tc-addr>
+	tailcat ls -l <tc-addr>:photos
 
 A DNS name with a "tailcat=" TXT record works in place of an address
-blob.`
+addr.`
 
 // clientLSMode lists path (default the served root) on the server.
 func clientLSMode(logf logger.Logf, long bool, args []string) error {
 	if len(args) != 1 {
-		return usagef("ls requires one <addrblob>[:path] argument")
+		return usagef("ls requires one <tc-addr>[:path] argument")
 	}
 	host, path, ok := splitRemoteArg(args[0])
 	if !ok {
@@ -61,7 +61,7 @@ func clientLSMode(logf logger.Logf, long bool, args []string) error {
 		path = "."
 	}
 
-	cl := newClient(logf, addrBlobArg(host), clientKey())
+	cl := newClient(logf, tailcatAddrArg(host), clientKey())
 	defer cl.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -71,7 +71,7 @@ func clientLSMode(logf logger.Logf, long bool, args []string) error {
 		return fmt.Errorf("dialing server: %w", err)
 	}
 	// The WireGuard tunnel already authenticated the server by its
-	// node key in the address blob, so the SSH host key adds nothing.
+	// node key in the tailcat address, so the SSH host key adds nothing.
 	sshConn, chans, reqs, err := gossh.NewClientConn(conn, "tailcat", &gossh.ClientConfig{
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 	})
