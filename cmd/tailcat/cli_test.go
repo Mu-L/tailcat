@@ -12,6 +12,7 @@ import (
 
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
+	"github.com/tailscale/tailcat"
 )
 
 func TestClassifyAddrBlobArg(t *testing.T) {
@@ -93,6 +94,26 @@ func TestServeHelpListsServerFlags(t *testing.T) {
 	for _, want := range []string{"--allow", "--full-address", "--key"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("serve help is missing %q", want)
+		}
+	}
+}
+
+func TestParseFilesFlagWriteOnlyModes(t *testing.T) {
+	dir := t.TempDir()
+	for _, tt := range []struct {
+		suffix   string
+		wantMode tailcat.FileServeMode
+		wantName string
+	}{
+		{":wo", tailcat.FileServeWO, "flat write-only"},
+		{":wo+", tailcat.FileServeWOPlus, "recursive write-only"},
+	} {
+		fs, modeName, err := parseFilesFlag(dir + tt.suffix)
+		if err != nil {
+			t.Fatalf("parseFilesFlag(%q): %v", tt.suffix, err)
+		}
+		if fs.Dir != dir || fs.Mode != tt.wantMode || modeName != tt.wantName {
+			t.Errorf("parseFilesFlag(%q) = {%q, %v}, %q; want {%q, %v}, %q", tt.suffix, fs.Dir, fs.Mode, modeName, dir, tt.wantMode, tt.wantName)
 		}
 	}
 }

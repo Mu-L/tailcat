@@ -6,6 +6,8 @@
 package tailcat
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -106,8 +108,11 @@ type rootedFiles struct {
 	root *os.Root
 	mode FileServeMode
 
-	mu    sync.Mutex
-	wrote map[string]bool // rooted paths this session created or wrote, for FileServeWO stats
+	mu sync.Mutex
+	// wrote maps client-visible paths to the paths actually created by this
+	// session. Drop-box modes use it for post-upload stats and setstats without
+	// revealing server-chosen names.
+	wrote map[string]string
 }
 
 // rel converts a cleaned absolute SFTP request path ("/foo/bar") to
@@ -120,28 +125,31 @@ func rel(requestPath string) string {
 	return p
 }
 
-// markOwn records that this session wrote or created the rooted path
-// p, allowing later stats of it in write-only mode.
-func (h *rootedFiles) markOwn(p string) {
+// markOwn records that this session created requestedPath at actualPath.
+func (h *rootedFiles) markOwn(requestedPath, actualPath string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.wrote == nil {
-		h.wrote = make(map[string]bool)
+		h.wrote = make(map[string]string)
 	}
-	h.wrote[p] = true
+	h.wrote[requestedPath] = actualPath
 }
 
-// isOwn reports whether this session wrote or created the rooted
-// path p.
-func (h *rootedFiles) isOwn(p string) bool {
+// ownPath returns the actual path created for client-visible path p.
+func (h *rootedFiles) ownPath(p string) (string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.wrote[p]
+	actual, ok := h.wrote[p]
+	return actual, ok
+}
+
+func (h *rootedFiles) writeOnly() bool {
+	return h.mode == FileServeWO || h.mode == FileServeWOPlus
 }
 
 // Fileread implements [sftp.FileReader] (the SFTP Get method).
 func (h *rootedFiles) Fileread(r *sftp.Request) (io.ReaderAt, error) {
-	if h.mode == FileServeWO {
+	if h.writeOnly() {
 		return nil, sftp.ErrSSHFxPermissionDenied
 	}
 	return h.root.Open(rel(r.Filepath))
@@ -154,7 +162,7 @@ func (h *rootedFiles) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 		return nil, sftp.ErrSSHFxPermissionDenied
 	}
 	pflags := r.Pflags()
-	if h.mode == FileServeWO {
+	if h.writeOnly() {
 		// A drop box only accepts creation of new files. Requiring the
 		// client to ask for creation makes a plain write-only open fail
 		// the same way whether its path exists or not; forcing exclusive
@@ -162,12 +170,31 @@ func (h *rootedFiles) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 		if pflags.Read || !pflags.Write || !pflags.Creat {
 			return nil, sftp.ErrSSHFxPermissionDenied
 		}
-		p := rel(r.Filepath)
-		f, err := h.root.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		requestedPath := rel(r.Filepath)
+		if h.mode == FileServeWO && (requestedPath == "." || strings.Contains(requestedPath, "/")) {
+			return nil, sftp.ErrSSHFxPermissionDenied
+		}
+
+		actualPath := requestedPath
+		var err error
+		if h.mode == FileServeWO {
+			actualPath, err = uniqueUploadPath(requestedPath)
+			if err != nil {
+				return nil, err
+			}
+		}
+		f, err := h.root.OpenFile(actualPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if h.mode == FileServeWOPlus && errors.Is(err, os.ErrExist) {
+			actualPath, err = uniqueUploadPath(requestedPath)
+			if err != nil {
+				return nil, err
+			}
+			f, err = h.root.OpenFile(actualPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		}
 		if err != nil {
 			return nil, err
 		}
-		h.markOwn(p)
+		h.markOwn(requestedPath, actualPath)
 		return f, nil
 	}
 	flags := os.O_WRONLY
@@ -194,6 +221,24 @@ func (h *rootedFiles) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	return f, nil
 }
 
+// uniqueUploadPath returns a server-chosen sibling of requestedPath. It uses
+// enough randomness that OpenFile can make exactly one atomic O_EXCL attempt;
+// a collision or random-source failure is returned rather than retried.
+func uniqueUploadPath(requestedPath string) (string, error) {
+	var random [8]byte
+	if _, err := io.ReadFull(rand.Reader, random[:]); err != nil {
+		return "", err
+	}
+	base := path.Base(requestedPath)
+	ext := path.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	uniqueBase := stem + "." + time.Now().UTC().Format("20060102150405") + "." + hex.EncodeToString(random[:]) + ext
+	if dir := path.Dir(requestedPath); dir != "." {
+		return path.Join(dir, uniqueBase), nil
+	}
+	return uniqueBase, nil
+}
+
 // Filecmd implements [sftp.FileCmder] (the SFTP Setstat, Rename,
 // Rmdir, Mkdir, Link, Symlink, and Remove methods).
 func (h *rootedFiles) Filecmd(r *sftp.Request) error {
@@ -201,23 +246,27 @@ func (h *rootedFiles) Filecmd(r *sftp.Request) error {
 	switch h.mode {
 	case FileServeRO:
 		return sftp.ErrSSHFxPermissionDenied
-	case FileServeWO:
-		// A drop box accepts new files and directories and lets a
-		// session adjust what it itself wrote (SFTP clients commonly
-		// follow an upload with Setstat to fix up permissions or
-		// times), but can't touch anything else.
+	case FileServeWO, FileServeWOPlus:
+		// A drop box lets a session adjust what it itself wrote (SFTP
+		// clients commonly follow an upload with Setstat to fix up
+		// permissions or times), but can't touch anything else. Only the
+		// recursive mode accepts directories.
 		switch r.Method {
 		case "Mkdir":
+			if h.mode == FileServeWO {
+				return sftp.ErrSSHFxPermissionDenied
+			}
 			if err := h.root.Mkdir(p, 0755); err != nil {
 				return err
 			}
-			h.markOwn(p)
+			h.markOwn(p, p)
 			return nil
 		case "Setstat":
-			if !h.isOwn(p) {
+			actualPath, ok := h.ownPath(p)
+			if !ok {
 				return sftp.ErrSSHFxPermissionDenied
 			}
-			return h.setstat(r, p)
+			return h.setstat(r, actualPath)
 		}
 		return sftp.ErrSSHFxPermissionDenied
 	}
@@ -278,7 +327,7 @@ func (h *rootedFiles) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	p := rel(r.Filepath)
 	switch r.Method {
 	case "List":
-		if h.mode == FileServeWO {
+		if h.writeOnly() {
 			return nil, sftp.ErrSSHFxPermissionDenied
 		}
 		f, err := h.root.Open(p)
@@ -312,22 +361,27 @@ func (h *rootedFiles) Lstat(r *sftp.Request) (sftp.ListerAt, error) {
 
 // Readlink implements [sftp.ReadlinkFileLister].
 func (h *rootedFiles) Readlink(requestPath string) (string, error) {
-	if h.mode == FileServeWO {
+	if h.writeOnly() {
 		return "", sftp.ErrSSHFxPermissionDenied
 	}
 	return h.root.Readlink(rel(requestPath))
 }
 
-// stat stats the rooted path p with statf (Stat or Lstat), applying
-// the write-only mode's visibility policy: a write-only session may
-// stat paths it wrote itself and directories (so upload destinations
-// resolve), but everything else reports not-exist, whether or not it
-// exists, so filenames can't be probed.
+// stat stats the rooted path p with statf, applying the drop-box visibility
+// policy. Both modes expose paths this session created. Strict write-only mode
+// otherwise exposes only the root; write-only-plus also exposes directories so
+// recursive upload destinations can resolve.
 func (h *rootedFiles) stat(p string, statf func(string) (os.FileInfo, error)) (os.FileInfo, error) {
-	fi, err := statf(p)
-	if h.mode != FileServeWO || h.isOwn(p) {
-		return fi, err
+	if !h.writeOnly() {
+		return statf(p)
 	}
+	if actualPath, ok := h.ownPath(p); ok {
+		return statf(actualPath)
+	}
+	if h.mode == FileServeWO && p != "." {
+		return nil, sftp.ErrSSHFxNoSuchFile
+	}
+	fi, err := statf(p)
 	if err != nil || !fi.IsDir() {
 		return nil, sftp.ErrSSHFxNoSuchFile
 	}

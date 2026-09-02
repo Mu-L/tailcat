@@ -29,11 +29,18 @@ that help us get there are very welcome.
 
 Thanks to the people who've reported security issues in tailcat:
 
-* [Will Frame](https://wpf.nz/) reported that write-only (`:wo`) file
-  shares, as used by `tailcat recv`, weren't actually write-only in
-  0.4.0: it let senders enumerate the directory or write over
-  existing files. Fixed in
-  [d796f883e](https://github.com/tailscale/tailcat/commit/d796f883e5ec8b17f6c4196276fad65646d101f5).
+* [Will Frame](https://wpf.nz/) reported two rounds of issues with
+  write-only (`:wo`) file shares (drop boxes), as used by
+  `tailcat recv`:
+  * In 0.4.0, senders could write over existing files, and could test
+    whether a guessed filename existed by how opening it behaved.
+    Fixed in
+    [d796f883e](https://github.com/tailscale/tailcat/commit/d796f883e5ec8b17f6c4196276fad65646d101f5).
+  * That fix left narrower ways to test guessed names: exclusive
+    creation failed on a collision, and directories could be stat'd.
+    Fixed by storing each upload under a server-chosen name and
+    making directory support a separate opt-in
+    (`tailcat recv --accept-dirs`).
 * [Matt Andreko](https://www.mattandreko.com/) reported two issues
   with how untrusted tailcat addresses are handled. Both are mostly
   attacking-yourself issues today, but they matter for automation, or

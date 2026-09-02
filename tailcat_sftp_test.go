@@ -11,7 +11,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"testing"
 
 	"github.com/pkg/sftp"
@@ -162,18 +164,59 @@ func TestSFTPNoSymlinkEscape(t *testing.T) {
 func TestSFTPWriteOnly(t *testing.T) {
 	dir := newServeDir(t)
 	c := sftpClient(t, dir, tailcat.FileServeWO)
+	originalInfo, err := os.Stat(filepath.Join(dir, "existing.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// A drop box may only create files. It must neither overwrite an
-	// existing file nor reveal its existence through a write-only open
-	// without O_CREATE.
-	if err := writeFile(c, "existing.txt", "overwritten"); err == nil {
-		t.Error("overwrite existing.txt succeeded in write-only mode")
+	// A flat drop box always accepts the same client-visible name and stores
+	// each upload under a different server-chosen root-level name. Whether the
+	// requested name exists is therefore not observable through the result.
+	for i, content := range []string{"first", "second"} {
+		if err := writeFile(c, "existing.txt", content); err != nil {
+			t.Fatalf("upload %d of existing.txt: %v", i+1, err)
+		}
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "existing.txt")); err != nil {
 		t.Fatalf("ReadFile existing.txt: %v", err)
 	} else if string(got) != "existing content" {
-		t.Errorf("existing.txt after overwrite attempt = %q; want %q", got, "existing content")
+		t.Errorf("original existing.txt after uploads = %q; want %q", got, "existing content")
 	}
+	wantName := regexp.MustCompile(`^existing\.[0-9]{14}\.[0-9a-f]{16}\.txt$`)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uploaded, contents []string
+	for _, entry := range entries {
+		if !wantName.MatchString(entry.Name()) {
+			continue
+		}
+		uploaded = append(uploaded, entry.Name())
+		b, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents = append(contents, string(b))
+	}
+	if len(uploaded) != 2 {
+		t.Fatalf("timestamped existing.txt uploads = %q; want two", uploaded)
+	}
+	sort.Strings(contents)
+	if contents[0] != "first" || contents[1] != "second" {
+		t.Errorf("uploaded contents = %q; want first and second", contents)
+	}
+	if err := c.Chmod("existing.txt", 0600); err != nil {
+		t.Errorf("Chmod client-visible existing.txt: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "existing.txt")); err != nil {
+		t.Fatal(err)
+	} else if got, want := fi.Mode().Perm(), originalInfo.Mode().Perm(); got != want {
+		t.Errorf("original existing.txt mode = %v; want unchanged %v", got, want)
+	}
+
+	// An open without O_CREATE gets the same answer for existing and absent
+	// paths and does not touch the filesystem.
 	for _, name := range []string{"existing.txt", "absent.txt"} {
 		f, err := c.OpenFile(name, os.O_WRONLY)
 		if err == nil {
@@ -190,29 +233,25 @@ func TestSFTPWriteOnly(t *testing.T) {
 		t.Fatalf("Create drop.txt: %v", err)
 	}
 
-	// A session may stat and adjust what it wrote itself.
+	// A session may stat and adjust its latest upload through the requested
+	// name, without learning the actual stored name.
 	if _, err := c.Stat("drop.txt"); err != nil {
 		t.Errorf("Stat own drop.txt: %v", err)
 	}
 	if err := c.Chmod("drop.txt", 0600); err != nil {
 		t.Errorf("Chmod own drop.txt: %v", err)
 	}
-	if err := c.Mkdir("newdir"); err != nil {
-		t.Errorf("Mkdir: %v", err)
+	if err := c.Mkdir("newdir"); err == nil {
+		t.Error("Mkdir succeeded in flat write-only mode")
 	}
-	if _, err := c.Stat("newdir"); err != nil {
-		t.Errorf("Stat own newdir: %v", err)
-	}
-	if err := writeFile(c, "newdir/nested.txt", "nested"); err != nil {
-		t.Errorf("Create newdir/nested.txt: %v", err)
-	}
-
-	// Directories stat fine so upload destinations resolve.
 	if _, err := c.Stat("/"); err != nil {
 		t.Errorf("Stat /: %v", err)
 	}
-	if _, err := c.Stat("sub"); err != nil {
-		t.Errorf("Stat sub: %v", err)
+	if _, err := c.Stat("sub"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Stat sub = %v; want not-exist", err)
+	}
+	if err := writeFile(c, "sub/nested.txt", "nested"); !errors.Is(err, os.ErrPermission) {
+		t.Errorf("Create sub/nested.txt = %v; want permission denied", err)
 	}
 
 	// Nothing else may be read, listed, stat'd, or modified.
@@ -225,22 +264,74 @@ func TestSFTPWriteOnly(t *testing.T) {
 	if _, err := c.ReadDir("/"); err == nil {
 		t.Error("ReadDir succeeded in write-only mode")
 	}
-	if _, err := c.Stat("existing.txt"); err == nil {
-		t.Error("Stat existing.txt succeeded in write-only mode")
-	}
 	if err := c.Remove("existing.txt"); err == nil {
 		t.Error("Remove existing.txt succeeded in write-only mode")
 	}
 	if err := c.Rename("existing.txt", "renamed.txt"); err == nil {
 		t.Error("Rename succeeded in write-only mode")
 	}
-	if err := c.Chmod("existing.txt", 0600); err == nil {
-		t.Error("Chmod existing.txt succeeded in write-only mode")
-	}
 
-	// A different session can't stat the first session's files.
+	// A different session can't stat the first session's requested names.
 	c2 := sftpClient(t, dir, tailcat.FileServeWO)
 	if _, err := c2.Stat("drop.txt"); err == nil {
 		t.Error("Stat drop.txt from a second session succeeded; want not-exist")
+	}
+}
+
+func TestSFTPWriteOnlyPlus(t *testing.T) {
+	dir := newServeDir(t)
+	c := sftpClient(t, dir, tailcat.FileServeWOPlus)
+
+	// The original name is preserved when free.
+	if err := writeFile(c, "drop.txt", "first"); err != nil {
+		t.Fatalf("Create drop.txt: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "drop.txt")); err != nil || string(got) != "first" {
+		t.Fatalf("stored drop.txt = %q, %v; want first, nil", got, err)
+	}
+
+	// A collision is accepted under one server-chosen sibling name, without
+	// overwriting the original.
+	if err := writeFile(c, "drop.txt", "second"); err != nil {
+		t.Fatalf("Create colliding drop.txt: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantName := regexp.MustCompile(`^drop\.[0-9]{14}\.[0-9a-f]{16}\.txt$`)
+	var collisionName string
+	for _, entry := range entries {
+		if wantName.MatchString(entry.Name()) {
+			collisionName = entry.Name()
+		}
+	}
+	if collisionName == "" {
+		t.Fatal("no timestamped collision file found")
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, collisionName)); err != nil || string(got) != "second" {
+		t.Errorf("collision file = %q, %v; want second, nil", got, err)
+	}
+
+	// Recursive mode exposes directories so uploads can resolve and create
+	// directory trees.
+	if _, err := c.Stat("sub"); err != nil {
+		t.Errorf("Stat sub: %v", err)
+	}
+	if err := c.Mkdir("newdir"); err != nil {
+		t.Fatalf("Mkdir newdir: %v", err)
+	}
+	if err := writeFile(c, "newdir/nested.txt", "nested"); err != nil {
+		t.Fatalf("Create nested file: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "newdir", "nested.txt")); err != nil || string(got) != "nested" {
+		t.Errorf("nested file = %q, %v; want nested, nil", got, err)
+	}
+
+	if _, err := c.ReadDir("/"); err == nil {
+		t.Error("ReadDir succeeded in recursive write-only mode")
+	}
+	if got, err := readFile(c, "drop.txt"); err == nil {
+		t.Errorf("read drop.txt succeeded, got %q", got)
 	}
 }

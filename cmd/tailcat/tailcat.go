@@ -95,9 +95,10 @@ func newRootCommand() *ff.Command {
 	serveFS := ff.NewFlagSet("serve").SetParent(rootFS)
 	flagAllow = serveFS.StringLong("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
 	flagFullAddress = serveFS.BoolLong("full-address", "print a longer connection address token with embedded DERP server info instead of a reference to a DERP map region ID. This lets clients connect more quickly, without a DERP map fetch.")
-	flagFiles = serveFS.StringLong("files", "", "directory to serve to SFTP clients (scp, sftp) with the 'files' service, with an optional :ro (read-only, the default), :rw (read-write), or :wo (write-only drop box) suffix. If empty, the current directory is served read-only. Giving --files implies the 'files' service.")
+	flagFiles = serveFS.StringLong("files", "", "directory to serve to SFTP clients (scp, sftp) with the 'files' service, with an optional :ro (read-only, the default), :rw (read-write), :wo (flat write-only drop box), or :wo+ (recursive write-only drop box) suffix. If empty, the current directory is served read-only. Giving --files implies the 'files' service.")
 
 	recvFS := ff.NewFlagSet("recv").SetParent(serveFS)
+	flagRecvAcceptDirs := recvFS.BoolLong("accept-dirs", "accept directory trees (tailcat cp -r), keeping requested file names when available. The trade-off: senders can then make and stat directories and learn whether some names already exist in the drop box. The default flat mode reveals nothing about existing files, but accepts only single files, each saved under a server-chosen unique name.")
 
 	pingFS := ff.NewFlagSet("ping").SetParent(rootFS)
 	pingUntilDirect := pingFS.BoolLong("until-direct", "keep pinging until a pong arrives over a direct (non-DERP) path; exit non-zero if that doesn't happen before --timeout")
@@ -182,7 +183,11 @@ func newRootCommand() *ff.Command {
 					if len(args) == 1 {
 						dir = args[0]
 					}
-					*flagFiles = dir + ":wo"
+					mode := ":wo"
+					if *flagRecvAcceptDirs {
+						mode = ":wo+"
+					}
+					*flagFiles = dir + mode
 					server(getLogf(), "")
 					return nil
 				},
@@ -429,10 +434,12 @@ Serve the current directory read-only to scp and sftp clients:
 
 	tailcat serve files
 
-Serve a directory read-write, or another as a write-only drop box:
+Serve a directory read-write, as a flat write-only drop box, or as a
+recursive write-only drop box:
 
 	tailcat serve --files=/pub:rw files
 	tailcat serve --files=/inbox:wo files
+	tailcat serve --files=/tree-inbox:wo+ files
 
 Serve with a saved key (see genkey) and restrict clients:
 
@@ -453,9 +460,12 @@ The sender copies files in with (see "tailcat cp --help"):
 
 	tailcat cp foo.txt <addrblob>:
 
-Write-only means senders can't list the directory, read anything
-back, or touch existing files, so the address blob only grants
-dropping files off.
+Write-only means senders can't make directories, list or read the
+directory, touch existing files, or learn whether a requested filename
+already exists. Each upload is saved under a new name containing a UTC
+timestamp and random suffix, so the address blob only grants dropping
+files off. To accept directory trees instead, use the less-private
+--accept-dirs flag; see its description for the trade-off.
 
 Receive into the current directory, or into a given one:
 
@@ -1337,7 +1347,7 @@ func server(logf logger.Logf, serveSpec string) {
 }
 
 // parseFilesFlag parses the --files flag value: a directory with an
-// optional :ro, :rw, or :wo suffix. An empty value means the current
+// optional :ro, :rw, :wo, or :wo+ suffix. An empty value means the current
 // directory, read-only. It returns the file service and the mode's
 // human-readable name.
 func parseFilesFlag(v string) (*tailcat.FileService, string, error) {
@@ -1347,8 +1357,10 @@ func parseFilesFlag(v string) (*tailcat.FileService, string, error) {
 		dir = d
 	} else if d, ok := strings.CutSuffix(v, ":rw"); ok {
 		dir, mode, modeName = d, tailcat.FileServeRW, "read-write"
+	} else if d, ok := strings.CutSuffix(v, ":wo+"); ok {
+		dir, mode, modeName = d, tailcat.FileServeWOPlus, "recursive write-only"
 	} else if d, ok := strings.CutSuffix(v, ":wo"); ok {
-		dir, mode, modeName = d, tailcat.FileServeWO, "write-only"
+		dir, mode, modeName = d, tailcat.FileServeWO, "flat write-only"
 	}
 	if dir == "" {
 		dir = "."

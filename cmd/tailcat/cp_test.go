@@ -89,7 +89,14 @@ func TestRecvDropBox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cp into recv: %v\n%s", err, out)
 	}
-	v, err := os.ReadFile(filepath.Join(recvDir, "gift.txt"))
+	matches, err := filepath.Glob(filepath.Join(recvDir, "gift.*.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("received files = %q; want one timestamped gift file", matches)
+	}
+	v, err := os.ReadFile(matches[0])
 	if err != nil {
 		t.Fatal(err)
 	}
