@@ -6,12 +6,35 @@
 package main
 
 import (
+	"encoding/base64"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/tailscale/tailcat"
 )
+
+func TestSSHRejectsInvalidConnBlob(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		blob    string
+		wantErr string
+	}{
+		{"missing prefix", "not-a-token", `doesn't start with "tc"`},
+		{"invalid base64", "tc%", "base64 decode"},
+		{"invalid CBOR", "tc" + base64.RawURLEncoding.EncodeToString([]byte("not CBOR")), "CBOR unmarshal"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := clientSSHMode("22", []string{tt.blob})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("clientSSHMode(%q) error = %v; want an error containing %q", tt.blob, err, tt.wantErr)
+			}
+		})
+	}
+}
 
 func TestSSHProxyCommandDERPMap(t *testing.T) {
 	const (
@@ -21,19 +44,26 @@ func TestSSHProxyCommandDERPMap(t *testing.T) {
 		port = "22"
 		url  = "https://derp.example.com/derpmap.json"
 	)
-	wantExe := exe
-	if runtime.GOOS == "windows" {
-		wantExe = `"` + exe + `"`
+	got, err := sshProxyCommand(exe, key, url, blob, port)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	got := sshProxyCommand(exe, key, url, blob, port)
-	want := wantExe + ` --key="client-default" --derpmap-url="https://derp.example.com/derpmap.json" tc-short-blob 22`
+	want := `'` + exe + `' '--key=client-default' '--derpmap-url=https://derp.example.com/derpmap.json' 'tc-short-blob' '22'`
+	if runtime.GOOS == "windows" {
+		want = `"/path/to/tailcat" "--key=client-default" "--derpmap-url=https://derp.example.com/derpmap.json" "tc-short-blob" "22"`
+	}
 	if got != want {
 		t.Errorf("sshProxyCommand with custom DERP map = %q; want %q", got, want)
 	}
 
-	got = sshProxyCommand(exe, key, tailcat.DefaultDERPMapURL, blob, port)
-	want = wantExe + ` --key="client-default" tc-short-blob 22`
+	got, err = sshProxyCommand(exe, key, tailcat.DefaultDERPMapURL, blob, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `'` + exe + `' '--key=client-default' 'tc-short-blob' '22'`
+	if runtime.GOOS == "windows" {
+		want = `"/path/to/tailcat" "--key=client-default" "tc-short-blob" "22"`
+	}
 	if got != want {
 		t.Errorf("sshProxyCommand with default DERP map = %q; want %q", got, want)
 	}
@@ -41,10 +71,92 @@ func TestSSHProxyCommandDERPMap(t *testing.T) {
 	// No --key flag at all when unset. The shell would collapse
 	// --key="" to --key=, which ff parses by consuming the next
 	// argument, the address blob.
-	got = sshProxyCommand(exe, "", tailcat.DefaultDERPMapURL, blob, port)
-	want = wantExe + ` tc-short-blob 22`
+	got, err = sshProxyCommand(exe, "", tailcat.DefaultDERPMapURL, blob, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `'` + exe + `' 'tc-short-blob' '22'`
+	if runtime.GOOS == "windows" {
+		want = `"/path/to/tailcat" "tc-short-blob" "22"`
+	}
 	if got != want {
 		t.Errorf("sshProxyCommand with no key = %q; want %q", got, want)
+	}
+}
+
+func TestProxyCommandJoinUnix(t *testing.T) {
+	tmpDir := t.TempDir()
+	injected := filepath.Join(tmpDir, "injected")
+	program := filepath.Join(tmpDir, "print args; false")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf '<%s>\\n' \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := `key $(touch ` + injected + `) ' " $HOME`
+	url := "https://example.invalid/`touch " + injected + "`?x=%h&y=two words"
+
+	command, err := proxyCommandJoinUnix([]string{program, "--key=" + key, "--derpmap-url=" + url, "tc-safe", "22"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate OpenSSH's documented %% -> % expansion before it invokes the
+	// shell. The shell must then see every dynamic value as one literal arg.
+	command = strings.ReplaceAll(command, "%%", "%")
+	out, err := exec.Command("sh", "-c", command).Output()
+	if err != nil {
+		t.Fatalf("running ProxyCommand: %v", err)
+	}
+	want := "<--key=" + key + ">\n<--derpmap-url=" + url + ">\n<tc-safe>\n<22>\n"
+	if string(out) != want {
+		t.Fatalf("ProxyCommand output = %q; want %q", out, want)
+	}
+	if _, err := os.Stat(injected); !os.IsNotExist(err) {
+		t.Fatalf("shell command substitution ran; Stat(%q) error = %v", injected, err)
+	}
+	if _, err := proxyCommandJoinUnix([]string{"line\nbreak"}); err == nil {
+		t.Fatal("proxyCommandJoinUnix accepted a newline")
+	}
+}
+
+func TestProxyCommandJoinWindows(t *testing.T) {
+	got, err := proxyCommandJoinWindows([]string{`C:\Program Files\tailcat.exe`, `--key=a&b`, `tc-safe`, `22`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"C:\Program Files\tailcat.exe" "--key=a&b" "tc-safe" "22"`
+	if got != want {
+		t.Fatalf("proxyCommandJoinWindows = %q; want %q", got, want)
+	}
+	if got := quoteWindowsCommandArg(`C:\tailcat\`); got != `"C:\tailcat\\"` {
+		t.Errorf("quoteWindowsCommandArg with trailing slash = %q", got)
+	}
+	for _, arg := range []string{`has"quote`, "has%percent", "has!bang", "has\nnewline", "has\x00nul"} {
+		if _, err := proxyCommandJoinWindows([]string{arg}); err == nil {
+			t.Errorf("proxyCommandJoinWindows accepted unsafe argument %q", arg)
+		}
+	}
+}
+
+func TestValidatedSSHPort(t *testing.T) {
+	for _, tt := range []struct {
+		in, want string
+		valid    bool
+	}{
+		{"22", "22", true},
+		{"0022", "22", true},
+		{"192.0.2.1", "192.0.2.1:22", true},
+		{"192.0.2.1:2222", "192.0.2.1:2222", true},
+		{"2001:db8::1", "[2001:db8::1]:22", true},
+		{"[2001:db8::1]:2222", "[2001:db8::1]:2222", true},
+		{"", "", false},
+		{"0", "", false},
+		{"65536", "", false},
+		{"22; touch /tmp/injected", "", false},
+		{"example.com:22", "", false},
+	} {
+		got, err := validatedSSHPort(tt.in)
+		if (err == nil) != tt.valid || got != tt.want {
+			t.Errorf("validatedSSHPort(%q) = %q, %v; want %q, valid=%v", tt.in, got, err, tt.want, tt.valid)
+		}
 	}
 }
 

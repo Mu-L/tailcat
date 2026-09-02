@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,13 @@ func TestCPUsageErrors(t *testing.T) {
 		if !errors.As(err, &ue) {
 			t.Errorf("%s: err = %v; want a usageError", tt.name, err)
 		}
+	}
+}
+
+func TestCPRejectsInvalidConnBlob(t *testing.T) {
+	err := clientCPMode(false, false, "22", []string{"local.txt", "tc%:remote.txt"})
+	if err == nil || !strings.Contains(err.Error(), "base64 decode") {
+		t.Fatalf("clientCPMode error = %v; want an invalid base64 error", err)
 	}
 }
 

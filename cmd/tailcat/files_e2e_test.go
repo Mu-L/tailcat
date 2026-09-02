@@ -21,6 +21,10 @@ import (
 // commands, returning its combined output and error.
 func runSFTPBatch(t *testing.T, e *testEnv, blob, batch string) ([]byte, error) {
 	t.Helper()
+	proxyCommand, err := sshProxyCommand(e.bin, "new", e.derpMapURL, blob, "22")
+	if err != nil {
+		t.Fatal(err)
+	}
 	batchFile := filepath.Join(t.TempDir(), "batch")
 	if err := os.WriteFile(batchFile, []byte(batch), 0600); err != nil {
 		t.Fatal(err)
@@ -29,7 +33,7 @@ func runSFTPBatch(t *testing.T, e *testEnv, blob, batch string) ([]byte, error) 
 		"-o", "StrictHostKeyChecking no",
 		"-o", "UserKnownHostsFile "+os.DevNull,
 		"-o", "LogLevel ERROR",
-		"-o", "ProxyCommand="+sshProxyCommand(e.bin, "new", e.derpMapURL, blob, "22"),
+		"-o", "ProxyCommand="+proxyCommand,
 		"-b", batchFile,
 		sshDestHost(blob))
 	cmd.Env = e.env

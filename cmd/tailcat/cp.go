@@ -58,27 +58,42 @@ func clientCPMode(recursive, preserve bool, portOrIPPort string, args []string) 
 	if len(args) < 2 {
 		return usagef("cp requires at least one source and a target")
 	}
+	portOrIPPort, err := validatedSSHPort(portOrIPPort)
+	if err != nil {
+		return err
+	}
 
-	// Translate <addrblob>:path arguments to scp host:path ones. The
-	// host handed to scp is a short deterministic label (see
-	// sshDestHost); the blob itself does the routing, inside the
-	// ProxyCommand.
+	// Find the server named by the remote arguments before translating
+	// them to scp host:path arguments.
 	blob := ""
-	scpArgs := make([]string, 0, len(args))
 	for _, arg := range args {
-		host, path, ok := splitRemoteArg(arg)
+		host, _, ok := splitRemoteArg(arg)
 		if !ok {
-			scpArgs = append(scpArgs, arg)
 			continue
 		}
 		if blob != "" && host != blob {
 			return usagef("all remote paths must name the same server (%q and %q differ)", blob, host)
 		}
 		blob = host
-		scpArgs = append(scpArgs, sshDestHost(host)+":"+path)
 	}
 	if blob == "" {
 		return usagef("no remote <addrblob>:path argument; nothing to copy through tailcat")
+	}
+	blob, err = validatedConnBlob(blob)
+	if err != nil {
+		return err
+	}
+
+	// Give scp a short deterministic host label; the validated blob does
+	// the actual routing inside ProxyCommand.
+	scpArgs := make([]string, 0, len(args))
+	for _, arg := range args {
+		_, path, ok := splitRemoteArg(arg)
+		if !ok {
+			scpArgs = append(scpArgs, arg)
+			continue
+		}
+		scpArgs = append(scpArgs, sshDestHost(blob)+":"+path)
 	}
 
 	exe, err := os.Executable()
@@ -89,13 +104,17 @@ func clientCPMode(recursive, preserve bool, portOrIPPort string, args []string) 
 	if err != nil {
 		log.Fatalf("no scp found in $PATH: %v", err)
 	}
+	proxyCommand, err := sshProxyCommand(exe, *flagKey, *flagDERPMapURL, blob, portOrIPPort)
+	if err != nil {
+		return err
+	}
 	argv := []string{
 		scpExe,
 		"-o", "UpdateHostKeys no",
 		"-o", "StrictHostKeyChecking no",
 		"-o", "UserKnownHostsFile " + os.DevNull,
 		"-o", "LogLevel ERROR",
-		"-o", "ProxyCommand=" + sshProxyCommand(exe, *flagKey, *flagDERPMapURL, blob, portOrIPPort),
+		"-o", "ProxyCommand=" + proxyCommand,
 	}
 	if recursive {
 		argv = append(argv, "-r")
@@ -103,6 +122,7 @@ func clientCPMode(recursive, preserve bool, portOrIPPort string, args []string) 
 	if preserve {
 		argv = append(argv, "-p")
 	}
+	argv = append(argv, "--")
 	argv = append(argv, scpArgs...)
 	err = execSSH(scpExe, argv)
 	log.Fatalf("failed to run scp: %v", err)
