@@ -154,8 +154,21 @@ func (h *rootedFiles) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 		return nil, sftp.ErrSSHFxPermissionDenied
 	}
 	pflags := r.Pflags()
-	if pflags.Read && h.mode == FileServeWO {
-		return nil, sftp.ErrSSHFxPermissionDenied
+	if h.mode == FileServeWO {
+		// A drop box only accepts creation of new files. Requiring the
+		// client to ask for creation makes a plain write-only open fail
+		// the same way whether its path exists or not; forcing exclusive
+		// creation makes the no-overwrite check atomic.
+		if pflags.Read || !pflags.Write || !pflags.Creat {
+			return nil, sftp.ErrSSHFxPermissionDenied
+		}
+		p := rel(r.Filepath)
+		f, err := h.root.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err != nil {
+			return nil, err
+		}
+		h.markOwn(p)
+		return f, nil
 	}
 	flags := os.O_WRONLY
 	if pflags.Read && pflags.Write {
@@ -177,9 +190,6 @@ func (h *rootedFiles) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	f, err := h.root.OpenFile(p, flags, 0644)
 	if err != nil {
 		return nil, err
-	}
-	if h.mode == FileServeWO {
-		h.markOwn(p)
 	}
 	return f, nil
 }

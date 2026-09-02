@@ -6,6 +6,7 @@
 package tailcat_test
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -161,6 +162,29 @@ func TestSFTPNoSymlinkEscape(t *testing.T) {
 func TestSFTPWriteOnly(t *testing.T) {
 	dir := newServeDir(t)
 	c := sftpClient(t, dir, tailcat.FileServeWO)
+
+	// A drop box may only create files. It must neither overwrite an
+	// existing file nor reveal its existence through a write-only open
+	// without O_CREATE.
+	if err := writeFile(c, "existing.txt", "overwritten"); err == nil {
+		t.Error("overwrite existing.txt succeeded in write-only mode")
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "existing.txt")); err != nil {
+		t.Fatalf("ReadFile existing.txt: %v", err)
+	} else if string(got) != "existing content" {
+		t.Errorf("existing.txt after overwrite attempt = %q; want %q", got, "existing content")
+	}
+	for _, name := range []string{"existing.txt", "absent.txt"} {
+		f, err := c.OpenFile(name, os.O_WRONLY)
+		if err == nil {
+			f.Close()
+			t.Errorf("write-only open without create of %s succeeded", name)
+			continue
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			t.Errorf("write-only open without create of %s = %v; want permission denied", name, err)
+		}
+	}
 
 	if err := writeFile(c, "drop.txt", "dropped"); err != nil {
 		t.Fatalf("Create drop.txt: %v", err)
