@@ -591,6 +591,11 @@ public key, but that's an implementation detail not exposed to end users and
 might change. (e.g. we might remove those bytes from the IP headers entirely and
 recover that redundant MTU)
 
+## Security
+
+See [SECURITY.md](./SECURITY.md) for how to report security issues,
+and for notes on tailcat's current threat model.
+
 ## Stability
 
 Tailcat is free to use, but it comes with no API or CLI stability
