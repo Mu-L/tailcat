@@ -989,6 +989,13 @@ func clientSOCKSMode(logf logger.Logf, listen string, args []string) error {
 	ss := &socks5.Server{
 		Logf: logger.WithPrefix(logf, "socks5: "),
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// The socks5 package caps each dial at 5 seconds, which
+			// is also WireGuard's handshake retransmit interval, so
+			// a single lost handshake packet would push the dial
+			// past that budget and fail the CONNECT. Detach from the
+			// package's deadline and use a more generous one.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			defer cancel()
 			dst, err := classifySOCKSAddr(ctx, lookupNetIP, addr)
 			if err != nil {
 				return nil, err
