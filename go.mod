@@ -1,6 +1,6 @@
 module github.com/tailscale/tailcat
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
@@ -19,7 +19,7 @@ require (
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
 	golang.org/x/sys v0.47.0
 	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8
-	tailscale.com v1.103.0-pre.0.20260830144538-72780705eda8
+	tailscale.com v1.103.0-pre.0.20260903171501-92ec102673bf
 )
 
 require (
