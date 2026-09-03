@@ -1744,9 +1744,10 @@ func (c *Client) up(ctx context.Context) error {
 }
 
 // Ping starts the client if needed (see [Client.Dial] for the lazy
-// startup behavior), sends a meow ping to the server via DERP, and
-// waits for the meowed acknowledgment, which also tells the server
-// to add us as a WireGuard peer. Calling it is optional (Dial does
+// startup behavior), sends a meow ping to the server via DERP
+// (resending periodically in case of packet loss), and waits for the
+// meowed acknowledgment, which also tells the server to add us as a
+// WireGuard peer. Calling it is optional (Dial does
 // it implicitly) but useful to test connectivity or measure the
 // relay round-trip time. The internal timeout is 10 seconds
 // regardless of ctx.
@@ -1762,8 +1763,8 @@ func (c *Client) Ping(ctx context.Context) (PingResult, error) {
 	return res, err
 }
 
-// ping sends a single meow ping and waits for the meowed ack. The
-// client must be started.
+// ping sends a meow ping and waits for the meowed ack. The client
+// must be started.
 func (c *Client) ping(ctx context.Context) (PingResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -1776,19 +1777,39 @@ func (c *Client) ping(ctx context.Context) (PingResult, error) {
 	derpRegion := c.lb.derpRegionID()
 	pkt := EncodeMeowPing(c.lb.pub, mc.DiscoPublicKey())
 
-	sent, err := mc.SendDERPPacketTo(dstNode, derpRegion, pkt)
-	if err != nil {
-		return zero, fmt.Errorf("sending meow: %w", err)
+	// DERP delivery is best effort: the relay drops packets sent to a
+	// key that isn't connected yet, so the ping (or its ack) is lost
+	// if either side's relay connection is still coming up. Resend
+	// periodically rather than betting the whole timeout on one
+	// packet. Send failures are retryable for the same reason: a full
+	// relay write queue drops the packet, which is just packet loss
+	// happening early. The server acks every ping, so duplicates are
+	// harmless.
+	send := func() error {
+		sent, err := mc.SendDERPPacketTo(dstNode, derpRegion, pkt)
+		if err != nil {
+			return fmt.Errorf("sending meow: %w", err)
+		}
+		if !sent {
+			return errors.New("meow not sent")
+		}
+		return nil
 	}
-	if !sent {
-		return zero, fmt.Errorf("meow not sent")
-	}
-
-	select {
-	case <-c.meowWait:
-		return PingResult{time.Since(t0)}, nil
-	case <-ctx.Done():
-		return zero, ctx.Err()
+	lastSendErr := send()
+	resend := time.NewTicker(time.Second)
+	defer resend.Stop()
+	for {
+		select {
+		case <-c.meowWait:
+			return PingResult{time.Since(t0)}, nil
+		case <-ctx.Done():
+			if lastSendErr != nil {
+				return zero, fmt.Errorf("%w (last send error: %v)", ctx.Err(), lastSendErr)
+			}
+			return zero, ctx.Err()
+		case <-resend.C:
+			lastSendErr = send()
+		}
 	}
 }
 
