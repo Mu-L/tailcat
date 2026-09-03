@@ -6,6 +6,9 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"testing"
 	"time"
@@ -21,6 +24,7 @@ func TestParseForwardSpec(t *testing.T) {
 		{"18080:8080", "127.0.0.1:18080", 8080, false},
 		{"1:65535", "127.0.0.1:1", 65535, false},
 		{"0", "", 0, true},
+		{"0:8080", "127.0.0.1:0", 8080, false},
 		{"8080:0", "", 0, true},
 		{"8080:bad", "", 0, true},
 	} {
@@ -42,15 +46,23 @@ func TestParseForwardSpec(t *testing.T) {
 func TestForwardEndToEnd(t *testing.T) {
 	e := newTestEnv(t)
 	remotePort := startEchoListener(t)
-	localLn, err := net.Listen("tcp", "127.0.0.1:0")
+
+	_, tailcatAddr, serverStderr := e.startServer("--verbose", "serve", strconv.Itoa(int(remotePort)))
+
+	// Forward from local port 0 (OS-assigned) and learn the picked
+	// address from the "forwarding" line on stderr. Pre-picking a free
+	// port here and passing it explicitly would race other processes
+	// on this machine binding it first. Stderr goes to a file, polled
+	// below, because reading a shared buffer while the process writes
+	// it would race.
+	forward := e.cmd("--verbose", "--key=new", "--derpmap-url="+e.derpMapURL, "forward", tailcatAddr, fmt.Sprintf("0:%d", remotePort))
+	stderrPath := filepath.Join(t.TempDir(), "forward.stderr")
+	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	localPort := localLn.Addr().(*net.TCPAddr).Port
-	localLn.Close()
-
-	_, tailcatAddr, _ := e.startServer("serve", strconv.Itoa(int(remotePort)))
-	forward := e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, "forward", tailcatAddr, fmt.Sprintf("%d:%d", localPort, remotePort))
+	defer stderrFile.Close()
+	forward.Stderr = stderrFile
 	if err := forward.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -58,19 +70,29 @@ func TestForwardEndToEnd(t *testing.T) {
 		_ = forward.Process.Kill()
 		_ = forward.Wait()
 	})
+	forwardStderr := func() string {
+		b, _ := os.ReadFile(stderrPath)
+		return string(b)
+	}
 
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
-	var conn net.Conn
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err = net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if err == nil {
+	addrRx := regexp.MustCompile(`forwarding (\S+) ->`)
+	var addr string
+	deadline := time.Now().Add(30 * time.Second)
+	for addr == "" {
+		if time.Now().After(deadline) {
+			t.Fatalf("forward never listened; stderr:\n%s", forwardStderr())
+		}
+		if m := addrRx.FindStringSubmatch(forwardStderr()); m != nil {
+			addr = m[1]
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	t.Logf("forwarding from %s", addr)
+
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		t.Fatalf("forward listener did not become available: %v", err)
+		t.Fatal(err)
 	}
 	defer conn.Close()
 
@@ -80,7 +102,7 @@ func TestForwardEndToEnd(t *testing.T) {
 	}
 	got := make([]byte, len(payload))
 	if _, err := conn.Read(got); err != nil {
-		t.Fatal(err)
+		t.Fatalf("read: %v\nforward stderr:\n%s\nserver stderr:\n%s", err, forwardStderr(), serverStderr)
 	}
 	if string(got) != payload {
 		t.Errorf("got %q; want %q", got, payload)

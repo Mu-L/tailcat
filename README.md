@@ -163,6 +163,8 @@ $ tailcat serve 8080,3306
 $ tailcat forward tcXXXXXXXXX 18080:8080 3306
 ```
 
+A local port of 0 asks the operating system for a free port; each listener prints its address once it's listening.
+
 By default, listeners bind to `127.0.0.1` and diagnostic logs are suppressed. Pass `--verbose` before the subcommand to enable verbose networking logs. Use `--bind=0.0.0.0` only when clients on other machines should be able to connect:
 
 ```sh

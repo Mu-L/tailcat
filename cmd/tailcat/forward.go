@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -29,10 +30,13 @@ func forwardCommand(parent *ff.FlagSet) *ff.Command {
 		LongHelp: `Listen on local TCP ports and forward connections to ports served by a tailcat server.
 
 A mapping with one port uses the same local and remote port. A mapping with
-local:remote uses different local and remote ports. For example:
+local:remote uses different local and remote ports. A local port of 0 asks
+the operating system for a free port; each listener prints its address once
+it's listening. For example:
 
 	tailcat forward <tc-addr> 8080
-	tailcat forward --bind=0.0.0.0 <tc-addr> 18080:8080`,
+	tailcat forward --bind=0.0.0.0 <tc-addr> 18080:8080
+	tailcat forward <tc-addr> 0:8080`,
 		Flags: fs,
 		Exec: func(ctx context.Context, args []string) error {
 			return runForward(ctx, getLogf(), *bind, args)
@@ -94,7 +98,10 @@ func runForward(ctx context.Context, logf logger.Logf, bind string, args []strin
 
 func forwardListener(ctx context.Context, logf logger.Logf, cl *tailcat.Client, ln net.Listener, remotePort uint16, listenersWG, connectionsWG *sync.WaitGroup, active *sync.Map) {
 	defer listenersWG.Done()
-	logf("forwarding %s -> remote localhost:%d", ln.Addr(), remotePort)
+	// Print unconditionally (not via the verbose-only logf): with a
+	// local port of 0 this line is the only way to learn which port
+	// the OS picked.
+	log.Printf("forwarding %s -> remote localhost:%d", ln.Addr(), remotePort)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -127,9 +134,12 @@ func parseForwardSpec(bind, spec string) (string, uint16, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("remote port: %w", err)
 	}
-	localPort, err := parseForwardPort(local)
-	if err != nil {
-		return "", 0, fmt.Errorf("local port: %w", err)
+	var localPort uint16
+	if !hasColon || local != "0" { // local port 0 asks the OS for a free port
+		localPort, err = parseForwardPort(local)
+		if err != nil {
+			return "", 0, fmt.Errorf("local port: %w", err)
+		}
 	}
 	return net.JoinHostPort(bind, strconv.Itoa(int(localPort))), remotePort, nil
 }
