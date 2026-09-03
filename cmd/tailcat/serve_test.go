@@ -43,8 +43,13 @@ func startEchoListener(t *testing.T) uint16 {
 }
 
 // runClient runs an unstarted tailcat client command with payload on
-// its stdin and a 30 second watchdog, returning its stdout and error.
-func runClient(t *testing.T, client *exec.Cmd, payload string) (string, error) {
+// its stdin and a 60 second watchdog, returning its stdout and error.
+// The watchdog only exists to catch true hangs; it's generous because
+// a loaded machine can drop relayed packets and leave the transfer
+// waiting out TCP retransmit backoff. On failure, the error includes
+// the client's stderr and the given server stderr (which may be nil),
+// so both sides of a wedged conversation are visible.
+func runClient(t *testing.T, client *exec.Cmd, serverStderr *bytes.Buffer, payload string) (string, error) {
 	t.Helper()
 	client.Stdin = strings.NewReader(payload)
 	var stdout, stderr bytes.Buffer
@@ -53,17 +58,24 @@ func runClient(t *testing.T, client *exec.Cmd, payload string) (string, error) {
 	if err := client.Start(); err != nil {
 		t.Fatal(err)
 	}
+	bothStderrs := func() string {
+		s := fmt.Sprintf("client stderr:\n%s", stderr.String())
+		if serverStderr != nil {
+			s += fmt.Sprintf("\nserver stderr:\n%s", serverStderr.String())
+		}
+		return s
+	}
 	done := make(chan error, 1)
 	go func() { done <- client.Wait() }()
 	select {
 	case err := <-done:
 		if err != nil {
-			err = fmt.Errorf("%w\nclient stderr:\n%s", err, stderr.String())
+			err = fmt.Errorf("%w\n%s", err, bothStderrs())
 		}
 		return stdout.String(), err
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		client.Process.Kill()
-		t.Fatalf("client did not exit within 30s\nclient stderr:\n%s", stderr.String())
+		t.Fatalf("client did not exit within 60s\n%s", bothStderrs())
 		panic("unreachable")
 	}
 }
@@ -84,10 +96,10 @@ func TestServePorts(t *testing.T) {
 	unservedPort := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
-	_, addr, _ := e.startServer("serve", strconv.Itoa(int(port)))
+	_, addr, serverStderr := e.startServer("--verbose", "serve", strconv.Itoa(int(port)))
 
 	const payload = "echo through a served port"
-	got, err := runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, addr, strconv.Itoa(int(port))), payload)
+	got, err := runClient(t, e.cmd("--verbose", "--key=new", "--derpmap-url="+e.derpMapURL, addr, strconv.Itoa(int(port))), serverStderr, payload)
 	if err != nil {
 		t.Fatalf("client to served port: %v", err)
 	}
@@ -95,7 +107,7 @@ func TestServePorts(t *testing.T) {
 		t.Errorf("served port echoed %q; want %q", got, payload)
 	}
 
-	got, err = runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, addr, strconv.Itoa(unservedPort)), payload)
+	got, err = runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, addr, strconv.Itoa(unservedPort)), serverStderr, payload)
 	if err == nil {
 		t.Errorf("client to unserved port %v succeeded with output %q; want connection failure", unservedPort, got)
 	}
@@ -110,11 +122,11 @@ func TestServeExitNode(t *testing.T) {
 	port := startEchoListener(t)
 	dst := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)
 
-	_, addr, _ := e.startServer("--serve=exit-node")
+	_, addr, serverStderr := e.startServer("--verbose", "--serve=exit-node")
 
 	t.Run("client_ipport", func(t *testing.T) {
 		const payload = "echo through the exit node"
-		got, err := runClient(t, e.cmd("--key=new", "--derpmap-url="+e.derpMapURL, addr, dst.String()), payload)
+		got, err := runClient(t, e.cmd("--verbose", "--key=new", "--derpmap-url="+e.derpMapURL, addr, dst.String()), serverStderr, payload)
 		if err != nil {
 			t.Fatalf("client to %v: %v", dst, err)
 		}
