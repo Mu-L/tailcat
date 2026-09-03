@@ -90,7 +90,7 @@ func newRootCommand() *ff.Command {
 	flagKey = rootFS.StringLong("key", "", "'new' for an ephemeral key. If empty, the default saved key is used if it exists ('default' in server mode, 'client-default' in client modes; see genkey), else an ephemeral key. Otherwise the path to a *.private.json or a name like 'foo' to read it from $CONFIG/tailcat/keys/foo.private.json")
 	flagVerbose = rootFS.BoolLong("verbose", "be verbose")
 	flagJSON = rootFS.BoolLong("json", "in server mode, write {\"listenAddr\": ...} JSON to stdout")
-	flagDERPMapURL = rootFS.StringLong("derpmap-url", tailcat.DefaultDERPMapURL, "URL of the JSON DERP map used to resolve or auto-select a DERP region")
+	flagDERPMapURL = rootFS.StringLong("derpmap-url", cmp.Or(os.Getenv("TAILCAT_DERPMAP_URL"), tailcat.DefaultDERPMapURL), "URL of the JSON DERP map used to resolve or auto-select a DERP region; its default can also be set with the TAILCAT_DERPMAP_URL environment variable")
 
 	serveFS := ff.NewFlagSet("serve").SetParent(rootFS)
 	flagAllow = serveFS.StringLong("allow", "", "comma-separated list of public keys to allow access to the server, or 'none' to allow no clients. If empty, all clients are allowed.")
@@ -393,7 +393,9 @@ Environment:
 
 	TAILCAT_ADDR_FILE: in server mode, write the tailcat address to the
 	given file path or, with a "tcp:" prefix, send it to that TCP
-	address.`
+	address.
+
+	TAILCAT_DERPMAP_URL: the default value of the --derpmap-url flag.`
 
 const serveLongHelp = `Run a tailcat server, printing its tailcat address for clients to
 connect to. Running tailcat with no arguments is the same as running
