@@ -70,3 +70,10 @@ dockers_v2:
 
 checksum:
   name_template: checksums.txt
+
+release:
+  # Create the GitHub Release as a draft so curated release notes can
+  # be written before publishing. Publishing the draft is the step
+  # that notifies watchers, so the notification carries those notes
+  # rather than only the generated commit changelog.
+  draft: true
