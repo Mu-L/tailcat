@@ -28,6 +28,27 @@ in Scoop's main bucket, so no extra bucket is needed:
 $ scoop install tailcat
 ```
 
+## Snap (Linux)
+
+[![tailcat on the Snap Store](https://snapcraft.io/tailcat/badge.svg)](https://snapcraft.io/tailcat)
+
+For Linux distros with [snapd](https://snapcraft.io/docs/installing-snapd),
+install from the [Snap Store](https://snapcraft.io/tailcat):
+
+```sh
+$ sudo snap install tailcat
+```
+
+The snap is community-maintained (packaging source at
+[chanchiwai-ray/tailcat-snap](https://github.com/chanchiwai-ray/tailcat-snap))
+and built from the upstream release tag with the recommended build
+tags. It's strictly confined: it can read and write files under your
+home directory but not elsewhere, and it bundles its own OpenSSH
+client for `tailcat ssh` and `tailcat cp`. As with any snap, its
+config (including the tailcat key and ssh's `.ssh` directory) lives
+under the snap's private home, `~/snap/tailcat/current`, rather than
+your real `~/.config` and `~/.ssh`.
+
 ## Container image
 
 There's a

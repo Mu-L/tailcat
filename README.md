@@ -53,6 +53,7 @@ for packagers building from source:
 | [.rpm packages](INSTALL.md#prebuilt-binaries) | Red Hat, Fedora, ... | | | | |
 | [Homebrew](INSTALL.md#homebrew-macos) | | ✅ | | | |
 | [Scoop](INSTALL.md#scoop-windows) | | | ✅ | | |
+| [Snap](INSTALL.md#snap-linux) | ✅ | | | | |
 | [Container image](INSTALL.md#container-image) | ✅ | | | | |
 | [Nix](INSTALL.md#nix) | ✅ | ✅ | | | |
 | [AUR](INSTALL.md#arch-linux-aur) | Arch | | | | |
