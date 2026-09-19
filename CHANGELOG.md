@@ -15,6 +15,15 @@
   there, like a default `go build` does.
   ([#108](https://github.com/tailscale/tailcat/issues/108), reported
   by [@Sammy-T](https://github.com/Sammy-T))
+- `tailcat cp` now works with OpenSSH 8.7 through 8.9 clients, such
+  as Ubuntu 22.04's. Those versions still speak the legacy SCP
+  protocol unless `scp -s` asks for SFTP, which is all tailcat file
+  services accept, so copies failed. tailcat now checks whether the
+  installed scp understands `-s` and passes it when it does; older
+  clients without the flag are unchanged.
+  ([#114](https://github.com/tailscale/tailcat/issues/114), fixed in
+  [#123](https://github.com/tailscale/tailcat/pull/123) by
+  [@BreezeDelegate](https://github.com/BreezeDelegate))
 - Go library: `Server.Status()` now includes a `Peer` entry per
   connected client, with `CurAddr` and `Relay` to tell a direct path
   from a DERP-relayed one.
@@ -70,6 +79,11 @@
   carries every tailcat connection, now uses CUBIC congestion control
   and RACK loss detection; both had been switched off because of
   gVisor bugs that have since been fixed upstream.
+- tailcat is on the [Snap Store](https://snapcraft.io/tailcat) as a
+  community-maintained, strictly confined snap; see INSTALL.md for
+  where its config lives.
+- tailcat now has a Bluesky account for release and project news:
+  [@tailcat.dev](https://bsky.app/profile/tailcat.dev).
 
 ## v0.6.0 (2026-09-04)
 

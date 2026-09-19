@@ -4,6 +4,11 @@
 
 <p align="center"><em>"Tailscale without Tailscale, by Tailscale"</em></p>
 
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/tailscale/tailcat"><img src="https://pkg.go.dev/badge/github.com/tailscale/tailcat.svg" alt="Go Reference"></a>
+  <a href="https://bsky.app/profile/tailcat.dev"><img src="https://img.shields.io/badge/Bluesky-@tailcat.dev-0285FF?logo=bluesky&logoColor=white" alt="Follow @tailcat.dev on Bluesky"></a>
+</p>
+
 # Tailcat
 
 Tailcat is a remix of Tailscale open source pieces to act like
