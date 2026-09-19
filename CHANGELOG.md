@@ -1,6 +1,6 @@
 # tailcat changelog
 
-## Unreleased
+## v0.7.0 (2026-09-19)
 
 - `--serve=exit-node` servers now forward UDP flows; previously only
   TCP was forwarded, so DNS, QUIC, and other UDP traffic through an
